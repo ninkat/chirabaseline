@@ -1,6 +1,5 @@
 import React from 'react';
 import { useY } from 'react-yjs';
-import * as Y from 'yjs';
 import { YjsContext } from '../context/YjsContext';
 
 export const Settings: React.FC = () => {

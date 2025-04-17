@@ -48,7 +48,7 @@ export const Todos: React.FC = () => {
                 />
                 <input
                   type="text"
-                  value={todo.text as string}
+                  value={(todo.text as string) || ''}
                   onChange={(event) => {
                     yTodos.get(index).set('text', event.currentTarget.value);
                   }}
