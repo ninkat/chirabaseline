@@ -224,25 +224,25 @@ const SenateVisualization: React.FC = () => {
   return (
     <div
       style={{
-        width: '100%',
-        height: '100vh',
+        width: fixedWidth,
+        height: fixedHeight,
         position: 'relative',
-        overflow: 'auto',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
       }}
     >
-      {' '}
-      {/* added overflow auto for fixed size svg */}
       <svg
         ref={svgRef}
-        width={fixedWidth} // use fixed width
-        height={fixedHeight} // use fixed height
+        width={fixedWidth}
+        height={fixedHeight}
         style={{
           background: '#f0f0f0',
           cursor: draggingNode ? 'grabbing' : 'default',
         }}
-        onMouseMove={handleMouseMove} // handle drag move on svg
-        onMouseUp={handleMouseUp} // handle drag end on svg
-        onMouseLeave={handleMouseUp} // also end drag if mouse leaves svg
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       >
         {/* render links first (under nodes) */}
         {linksData.map((linkData, index) => {
