@@ -40,40 +40,13 @@ const Graph: React.FC = () => {
   useEffect(() => {
     if (!doc) return;
 
-    // get the provider from the doc (it's available in the provider property if using WebrtcProvider)
-    // @ts-expect-error - the provider is attached to the doc but not typed
-    const provider = doc.provider;
-    console.log('provider', provider);
-    // check if we're already synced
-    if (provider && provider.synced) {
+    // assume we're synced after a short delay, as we can't reliably detect sync status
+    // without a specific provider implementation (e.g., y-websocket's 'synced' event)
+    const timeout = setTimeout(() => {
+      console.log('assuming sync after timeout');
       setSyncStatus(true);
-    }
+    }, 2000);
 
-    // listen for sync events
-    const handleSync = () => {
-      console.log('document synced with peers');
-      setSyncStatus(true);
-    };
-
-    // some providers emit 'sync' when initial sync is complete
-    if (provider) {
-      provider.on('synced', handleSync);
-
-      // also listen for 'status' changes in case provider uses that
-      provider.on('status', (event: { status: string }) => {
-        if (event.status === 'connected' || event.status === 'synced') {
-          setSyncStatus(true);
-        }
-      });
-
-      return () => {
-        provider.off('synced', handleSync);
-        provider.off('status');
-      };
-    }
-
-    // if no provider or can't detect sync, assume we're synced after a short delay
-    const timeout = setTimeout(() => setSyncStatus(true), 4000);
     return () => clearTimeout(timeout);
   }, [doc]);
 
