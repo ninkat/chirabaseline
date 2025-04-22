@@ -602,10 +602,22 @@ const SenateVisualization: React.FC = () => {
       .attr('marker-end', (d) =>
         d.type === 'sponsor' ? 'url(#arrowhead)' : ''
       )
-      .attr('x1', (d) => (d.source as D3Node).x || 0)
-      .attr('y1', (d) => (d.source as D3Node).y || 0)
-      .attr('x2', (d) => (d.target as D3Node).x || 0)
-      .attr('y2', (d) => (d.target as D3Node).y || 0);
+      .attr('x1', (d: D3Link) => {
+        const source = d.source as D3Node;
+        return source.x || 0;
+      })
+      .attr('y1', (d: D3Link) => {
+        const source = d.source as D3Node;
+        return source.y || 0;
+      })
+      .attr('x2', (d: D3Link) => {
+        const target = d.target as D3Node;
+        return target.x || 0;
+      })
+      .attr('y2', (d: D3Link) => {
+        const target = d.target as D3Node;
+        return target.y || 0;
+      });
 
     // Save link reference
     linksRef.current = link as d3.Selection<
@@ -643,7 +655,8 @@ const SenateVisualization: React.FC = () => {
         d.party === 'd' ? '#3498db' : d.party === 'r' ? '#e74c3c' : '#95a5a6'
       )
       .attr('stroke', '#333')
-      .attr('stroke-width', 1.5);
+      .attr('stroke-width', 1.5)
+      .attr('class', 'node-shape'); // add class for selecting shapes
 
     // Create rectangles for bills
     node
@@ -655,7 +668,8 @@ const SenateVisualization: React.FC = () => {
       .attr('height', 16)
       .attr('fill', '#95a5a6')
       .attr('stroke', '#333')
-      .attr('stroke-width', 1.5);
+      .attr('stroke-width', 1.5)
+      .attr('class', 'node-shape'); // add class for selecting shapes
 
     // Add text labels
     node
@@ -664,7 +678,8 @@ const SenateVisualization: React.FC = () => {
       .attr('dy', '.35em')
       .attr('font-size', '10px')
       .text((d) => d.name)
-      .attr('opacity', 0); // hidden by default
+      .attr('opacity', 0)
+      .attr('pointer-events', 'none'); // disable pointer events on text
 
     // Define a simplified drag handler using function declaration for "this" context
 
@@ -755,7 +770,8 @@ const SenateVisualization: React.FC = () => {
 
     // Add hover behaviors with debounce to prevent flickering
     node
-      .on('mouseenter', function (event, d) {
+      .selectAll<SVGElement, D3Node>('.node-shape') // only attach hover to shapes
+      .on('mouseenter', function (this: Element, _: PointerEvent, d: D3Node) {
         // Clear any existing hover timer
         if (hoverTimerRef.current) {
           clearTimeout(hoverTimerRef.current);
@@ -769,12 +785,16 @@ const SenateVisualization: React.FC = () => {
           lastHoveredIdRef.current = d.id;
 
           // Immediate visual feedback for this client
-          d3.select(this)
-            .select('circle, rect')
-            .attr('stroke', '#f39c12')
-            .attr('stroke-width', 3);
+          const parentElement = this.parentElement;
+          if (parentElement) {
+            const parentNode = d3.select(parentElement);
+            parentNode
+              .select('.node-shape')
+              .attr('stroke', '#f39c12')
+              .attr('stroke-width', 3);
 
-          d3.select(this).select('text').attr('opacity', 1);
+            parentNode.select('text').attr('opacity', 1);
+          }
 
           // Update shared state with slight delay
           hoverTimerRef.current = setTimeout(() => {
@@ -784,7 +804,7 @@ const SenateVisualization: React.FC = () => {
           }, 50);
         }
       })
-      .on('mouseleave', function () {
+      .on('mouseleave', function (this: Element) {
         // Clear any pending hover timer
         if (hoverTimerRef.current) {
           clearTimeout(hoverTimerRef.current);
@@ -792,12 +812,16 @@ const SenateVisualization: React.FC = () => {
         }
 
         // Immediate visual feedback for this client
-        d3.select(this)
-          .select('circle, rect')
-          .attr('stroke', '#333')
-          .attr('stroke-width', 1.5);
+        const parentElement = this.parentElement;
+        if (parentElement) {
+          const parentNode = d3.select(parentElement);
+          parentNode
+            .select('.node-shape')
+            .attr('stroke', '#333')
+            .attr('stroke-width', 1.5);
 
-        d3.select(this).select('text').attr('opacity', 0);
+          parentNode.select('text').attr('opacity', 0);
+        }
 
         // Set local state for tooltip
         setHoveredNode(null);
