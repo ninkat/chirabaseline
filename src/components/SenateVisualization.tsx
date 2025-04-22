@@ -1,39 +1,12 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { YjsContext } from '../context/YjsContext';
-import { useY } from 'react-yjs';
 import * as d3 from 'd3';
 import senateData from '../assets/foafagain.json'; // import the json data
 
 // define shared value types for y.map
 type NodeMapValue = string | number | boolean | undefined;
 type LinkMapValue = string;
-
-// define senator node data structure
-interface SenatorNodeData {
-  id: string;
-  name: string;
-  type: 'senator';
-  state: string;
-  party: 'd' | 'r' | 'i'; // assuming 'i' for independent, adjust if needed
-  x: number;
-  y: number;
-  uuid: string; // stable react key
-}
-
-// define bill node data structure
-interface BillNodeData {
-  id: string;
-  name: string;
-  type: 'bill';
-  status: string;
-  x: number;
-  y: number;
-  uuid: string; // stable react key
-}
-
-// union type for any node in the graph
-type GraphNodeData = SenatorNodeData | BillNodeData;
 
 // d3 specific types - extend SimulationNodeDatum with our required properties
 interface D3Node extends d3.SimulationNodeDatum {
@@ -58,49 +31,20 @@ const SenateVisualization: React.FC = () => {
   const yNodes = doc!.getArray<Y.Map<NodeMapValue>>('senateNodes');
   const yLinks = doc!.getArray<Y.Map<LinkMapValue>>('senateLinks');
 
-  // add shared hover state with yjs
-  const ySharedState = doc!.getMap<string | null>('senateSharedState');
+  // add shared state with yjs
+  const ySharedState = doc!.getMap<string | boolean | null>(
+    'senateSharedState'
+  );
 
-  // get reactive copies of the data for rendering
-  const nodesData = useY(yNodes); // careful: this returns plain js objects
-  const linksData = useY(yLinks);
-  // we don't need to track all state changes, just observe specific changes
+  // reference to track initialization
+  const isInitializedRef = useRef(false);
 
-  // ref to keep track of the yjs array itself for initialization checks
-  const yNodesRef = useRef(yNodes);
-
-  const [hoveredNode, setHoveredNode] = useState<GraphNodeData | null>(null);
+  // only keep syncStatus state (not d3 related)
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
 
   // fixed dimensions for the svg canvas
   const fixedWidth = 1280;
   const fixedHeight = 720;
-
-  // add a ref to track initialization
-  const isInitializedRef = useRef(false);
-  const svgRef = useRef<d3.Selection<
-    SVGSVGElement,
-    unknown,
-    null,
-    undefined
-  > | null>(null);
-  const nodesRef = useRef<d3.Selection<
-    SVGGElement,
-    D3Node,
-    SVGGElement,
-    unknown
-  > | null>(null);
-  const linksRef = useRef<d3.Selection<
-    SVGLineElement,
-    D3Link,
-    SVGGElement,
-    unknown
-  > | null>(null);
-
-  // Add refs for tracking node states
-  const hoverTimerRef = useRef<number | null>(null);
-  const lastHoveredIdRef = useRef<string | null>(null);
-  const draggedNodeIdRef = useRef<string | null>(null);
 
   // track sync status (simple timeout approach)
   useEffect(() => {
@@ -113,15 +57,10 @@ const SenateVisualization: React.FC = () => {
     return () => clearTimeout(timeout);
   }, [doc]);
 
-  // keep ynodesref updated
-  useEffect(() => {
-    yNodesRef.current = yNodes;
-  }, [yNodes]);
-
   // initialize graph data from json if ynodes is empty after sync
   useEffect(() => {
-    // wait for sync and check if nodes are empty (dimensions are now fixed)
-    if (!syncStatus || yNodesRef.current.length > 0) {
+    // wait for sync and check if nodes are empty
+    if (!syncStatus || yNodes.length > 0) {
       return;
     }
 
@@ -170,159 +109,188 @@ const SenateVisualization: React.FC = () => {
     });
   }, [syncStatus, doc, yNodes, yLinks]);
 
-  // get typed node data helper
-  const getNodeDataById = (id: string): GraphNodeData | null => {
-    const nodeData = nodesData.find((node) => node.id === id);
-    if (!nodeData) return null;
-
-    if (nodeData.type === 'senator') {
-      return nodeData as unknown as SenatorNodeData;
-    } else if (nodeData.type === 'bill') {
-      return nodeData as unknown as BillNodeData;
-    } else {
-      console.warn('unknown node type found:', nodeData.type);
-      return null;
-    }
-  };
-
-  // sync hover state from yjs
+  // d3 visualization setup and update
   useEffect(() => {
-    if (!doc || !syncStatus) return;
+    if (!syncStatus || !d3Container.current) return;
 
-    // observe changes to the shared hover state
-    const observer = () => {
-      const hoveredId = ySharedState.get('hoveredNodeId');
-      // Store current hover ID to prevent circular updates
-      const currentHoverId = hoveredNode?.id;
+    // only initialize once
+    if (isInitializedRef.current) return;
+    isInitializedRef.current = true;
 
-      if (hoveredId) {
-        // Only update if the ID is different from what we already have
-        if (hoveredId !== currentHoverId) {
-          const nodeData = getNodeDataById(hoveredId);
-          if (nodeData) {
-            setHoveredNode(nodeData);
-          }
+    console.log('initializing d3 visualization');
+
+    // clear any existing content
+    d3.select(d3Container.current).selectAll('*').remove();
+
+    // create svg element
+    const svg = d3
+      .select(d3Container.current)
+      .append('svg')
+      .attr('width', fixedWidth)
+      .attr('height', fixedHeight)
+      .attr('viewBox', [0, 0, fixedWidth, fixedHeight])
+      .attr('style', 'background: #f0f0f0; max-width: 100%; height: auto;');
+
+    // create arrow marker for sponsor links
+    svg
+      .append('defs')
+      .append('marker')
+      .attr('id', 'arrowhead')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 20)
+      .attr('refY', 0)
+      .attr('orient', 'auto')
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#555');
+
+    // create links group
+    const linkGroup = svg.append('g').attr('class', 'links');
+
+    // create nodes group
+    const nodeGroup = svg.append('g').attr('class', 'nodes');
+
+    // create tooltip group - new d3 tooltip
+    const tooltip = svg
+      .append('g')
+      .attr('class', 'tooltip')
+      .style('visibility', 'hidden');
+
+    // tooltip background
+    tooltip
+      .append('rect')
+      .attr('rx', 4)
+      .attr('ry', 4)
+      .attr('width', 180)
+      .attr('height', 120)
+      .attr('fill', 'rgba(255, 255, 255, 0.85)')
+      .attr('stroke', '#ccc');
+
+    // tooltip content containers
+    const tooltipContent = tooltip.append('g');
+    tooltipContent
+      .append('text')
+      .attr('class', 'tt-id')
+      .attr('y', 20)
+      .attr('x', 10);
+    tooltipContent
+      .append('text')
+      .attr('class', 'tt-name')
+      .attr('y', 40)
+      .attr('x', 10);
+    tooltipContent
+      .append('text')
+      .attr('class', 'tt-type')
+      .attr('y', 60)
+      .attr('x', 10);
+    tooltipContent
+      .append('text')
+      .attr('class', 'tt-detail1')
+      .attr('y', 80)
+      .attr('x', 10);
+    tooltipContent
+      .append('text')
+      .attr('class', 'tt-detail2')
+      .attr('y', 100)
+      .attr('x', 10);
+
+    // helper function to convert node maps to d3 nodes
+    const mapNodesToD3 = (): D3Node[] => {
+      const nodes: D3Node[] = [];
+      for (let i = 0; i < yNodes.length; i++) {
+        const node = yNodes.get(i);
+        const id = node.get('id') as string;
+        const type = node.get('type') as string;
+        const name = node.get('name') as string;
+        const x = (node.get('x') as number) || fixedWidth / 2;
+        const y = (node.get('y') as number) || fixedHeight / 2;
+        const uuid = node.get('uuid') as string;
+
+        const d3Node: D3Node = {
+          id,
+          type,
+          name,
+          x,
+          y,
+          uuid,
+        };
+
+        if (type === 'senator') {
+          d3Node.party = node.get('party') as string;
+          d3Node.state = node.get('state') as string;
+        } else if (type === 'bill') {
+          d3Node.status = node.get('status') as string;
         }
-      } else if (hoveredNode) {
-        // Only clear if we have something set
-        setHoveredNode(null);
+
+        nodes.push(d3Node);
       }
+      return nodes;
     };
 
-    // initial check
-    observer();
+    // helper function to convert link maps to d3 links
+    const mapLinksToD3 = (nodeMap: Map<string, D3Node>): D3Link[] => {
+      const links: D3Link[] = [];
+      for (let i = 0; i < yLinks.length; i++) {
+        const link = yLinks.get(i);
+        const sourceId = link.get('source') as string;
+        const targetId = link.get('target') as string;
+        const type = link.get('type') as string;
 
-    // subscribe to changes
-    ySharedState.observe(observer);
+        const source = nodeMap.get(sourceId) || sourceId;
+        const target = nodeMap.get(targetId) || targetId;
 
-    return () => {
-      ySharedState.unobserve(observer);
+        links.push({ source, target, type });
+      }
+      return links;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncStatus, doc, getNodeDataById, nodesData]);
 
-  // Create an observer for node positions and hover states
-  useEffect(() => {
-    if (!syncStatus || !d3Container.current || !isInitializedRef.current)
-      return;
+    // function to update the visualization
+    const updateVisualization = () => {
+      // get current data
+      const nodes = mapNodesToD3();
 
-    // If we have an initialized visualization, update node positions directly
-    if (svgRef.current && nodesRef.current && linksRef.current) {
-      // Get shared hover state
-      const hoveredId = ySharedState.get('hoveredNodeId');
-      console.log(
-        `Updating visualization: hoveredId=${hoveredId}, draggedNodeId=${draggedNodeIdRef.current}`
-      );
-
-      // Get the latest node data with their positions
-      const nodes: D3Node[] = nodesData.map((node) => ({
-        ...node,
-        id: node.id as string,
-        type: node.type as string,
-        name: node.name as string,
-        party:
-          node.type === 'senator'
-            ? (node as unknown as SenatorNodeData).party
-            : undefined,
-        state:
-          node.type === 'senator'
-            ? (node as unknown as SenatorNodeData).state
-            : undefined,
-        status:
-          node.type === 'bill'
-            ? (node as unknown as BillNodeData).status
-            : undefined,
-        x: (node.x as number) || 0,
-        y: (node.y as number) || 0,
-        uuid: node.uuid as string,
-      }));
-
-      // The fundamental issue:
-      // React state updates (hoveredNode) trigger the tooltip, but D3 visual updates
-      // might not be happening because our effect dependencies aren't detecting all changes.
-      // Let's force D3 to update the visuals on every render.
-
-      // Reset ALL visual states first
-      nodesRef.current
-        .selectAll('circle, rect')
-        .attr('stroke', '#333')
-        .attr('stroke-width', 1.5);
-
-      nodesRef.current.selectAll('text').attr('opacity', 0);
-
-      // Apply hover highlights if needed - ONLY to the specifically hovered node
-      if (hoveredId) {
-        const hoveredNodes = nodesRef.current.filter(
-          (d: D3Node) => d.id === hoveredId
-        );
-
-        if (!hoveredNodes.empty()) {
-          console.log(`Highlighting hovered node: ${hoveredId}`);
-          hoveredNodes
-            .select('circle, rect')
-            .attr('stroke', '#f39c12')
-            .attr('stroke-width', 3);
-
-          hoveredNodes.select('text').attr('opacity', 1);
-        } else {
-          console.log(`Could not find node with ID: ${hoveredId}`);
-        }
-      }
-
-      // Apply drag highlights separately
-      if (draggedNodeIdRef.current) {
-        const draggedNodes = nodesRef.current.filter(
-          (d: D3Node) => d.id === draggedNodeIdRef.current
-        );
-
-        if (!draggedNodes.empty()) {
-          console.log(`Highlighting dragged node: ${draggedNodeIdRef.current}`);
-          draggedNodes
-            .select('circle, rect')
-            .attr('stroke', '#f39c12')
-            .attr('stroke-width', 3);
-        }
-      }
-
-      // Update node positions
-      nodesRef.current
-        .data(nodes, (d: D3Node) => d.uuid)
-        .attr('transform', (d: D3Node) => `translate(${d.x},${d.y})`);
-
-      // Create a node map for resolving links
+      // create a node map for resolving links
       const nodeMap = new Map<string, D3Node>();
       nodes.forEach((n) => nodeMap.set(n.id, n));
 
-      // Resolve links to use actual node references
-      const links: D3Link[] = linksData.map((link) => {
-        const source = nodeMap.get(link.source as string) || link.source;
-        const target = nodeMap.get(link.target as string) || link.target;
-        return { source, target, type: link.type as string };
-      });
+      // resolve links
+      const links = mapLinksToD3(nodeMap);
 
-      // Update links
-      linksRef.current
-        .data(links)
+      // create a key function for links
+      const linkKeyFn = (d: D3Link): string => {
+        const source = d.source as D3Node;
+        const target = d.target as D3Node;
+        return `${source.id}-${target.id}-${d.type}`;
+      };
+
+      // update links
+      const link = linkGroup
+        .selectAll<SVGLineElement, D3Link>('line')
+        .data(links, linkKeyFn);
+
+      // handle removed links
+      link.exit().remove();
+
+      // handle new links
+      const linkEnter = link
+        .enter()
+        .append('line')
+        .attr('stroke', (d) => (d.type === 'sponsor' ? '#555' : '#bbb'))
+        .attr('stroke-width', (d) => (d.type === 'sponsor' ? 2 : 1))
+        .attr('stroke-dasharray', (d) =>
+          d.type === 'cosponsor' ? '3,3' : 'none'
+        )
+        .attr('marker-end', (d) =>
+          d.type === 'sponsor' ? 'url(#arrowhead)' : ''
+        );
+
+      // merge links
+      const linkMerge = linkEnter.merge(link);
+
+      // update link positions
+      linkMerge
         .attr('x1', (d: D3Link) => {
           const source = d.source as D3Node;
           return source.x || 0;
@@ -339,95 +307,267 @@ const SenateVisualization: React.FC = () => {
           const target = d.target as D3Node;
           return target.y || 0;
         });
-    }
-    // Force this effect to run on EVERY render to catch all state changes
-  });
 
-  // d3 visualization setup and update - now only runs for initial setup
-  useEffect(() => {
-    if (!syncStatus || !d3Container.current || nodesData.length === 0) return;
+      // update nodes
+      const node = nodeGroup
+        .selectAll<SVGGElement, D3Node>('g.node')
+        .data(nodes, (d: D3Node) => d.uuid);
 
-    // Only build visualization once
-    if (isInitializedRef.current && svgRef.current) {
-      return; // Skip rebuilding if already initialized
-    }
+      // handle removed nodes
+      node.exit().remove();
 
-    console.log('Building visualization initially');
+      // handle new nodes
+      const nodeEnter = node
+        .enter()
+        .append('g')
+        .attr('class', 'node')
+        .attr('data-id', (d) => d.id)
+        .attr('data-uuid', (d) => d.uuid);
 
-    // Set initialization flag
-    isInitializedRef.current = true;
+      // create senator nodes
+      nodeEnter
+        .filter((d) => d.type === 'senator')
+        .append('circle')
+        .attr('r', 10)
+        .attr('fill', (d) =>
+          d.party === 'd' ? '#3498db' : d.party === 'r' ? '#e74c3c' : '#95a5a6'
+        )
+        .attr('stroke', '#333')
+        .attr('stroke-width', 1.5)
+        .attr('class', 'node-shape');
 
-    // clear previous svg content
-    d3.select(d3Container.current).selectAll('*').remove();
+      // create bill nodes
+      nodeEnter
+        .filter((d) => d.type === 'bill')
+        .append('rect')
+        .attr('x', -8)
+        .attr('y', -8)
+        .attr('width', 16)
+        .attr('height', 16)
+        .attr('fill', '#95a5a6')
+        .attr('stroke', '#333')
+        .attr('stroke-width', 1.5)
+        .attr('class', 'node-shape');
 
-    // create svg element
-    const svg = d3
-      .select(d3Container.current)
-      .append('svg')
-      .attr('width', fixedWidth)
-      .attr('height', fixedHeight)
-      .attr('viewBox', [0, 0, fixedWidth, fixedHeight])
-      .attr('style', 'background: #f0f0f0; max-width: 100%; height: auto;');
+      // add text labels
+      nodeEnter
+        .append('text')
+        .attr('dx', 15)
+        .attr('dy', '.35em')
+        .attr('font-size', '10px')
+        .text((d) => d.name)
+        .attr('opacity', 0)
+        .attr('pointer-events', 'none');
 
-    // Store svg reference
-    svgRef.current = svg as d3.Selection<
-      SVGSVGElement,
-      unknown,
-      null,
-      undefined
-    >;
+      // merge nodes
+      const nodeMerge = nodeEnter.merge(node);
 
-    // prepare data for d3
-    const nodes: D3Node[] = nodesData.map((node) => ({
-      ...node,
-      // convert id string to actual node reference for d3 links
-      id: node.id as string,
-      type: node.type as string,
-      name: node.name as string,
-      party:
-        node.type === 'senator'
-          ? (node as unknown as SenatorNodeData).party
-          : undefined,
-      state:
-        node.type === 'senator'
-          ? (node as unknown as SenatorNodeData).state
-          : undefined,
-      status:
-        node.type === 'bill'
-          ? (node as unknown as BillNodeData).status
-          : undefined,
-      x: (node.x as number) || fixedWidth / 2,
-      y: (node.y as number) || fixedHeight / 2,
-      uuid: node.uuid as string,
-    }));
+      // update node positions
+      nodeMerge.attr(
+        'transform',
+        (d: D3Node) => `translate(${d.x || 0},${d.y || 0})`
+      );
 
-    const links: D3Link[] = linksData.map((link) => ({
-      source: link.source as string,
-      target: link.target as string,
-      type: link.type as string,
-    }));
+      // get hover and drag state from yjs
+      const hoveredId = ySharedState.get('hoveredNodeId') as string;
+      const draggedId = ySharedState.get('draggedNodeId') as string;
 
-    // get counts for layout arrangement
-    const demNodes = nodes.filter(
-      (n) => n.type === 'senator' && n.party === 'd'
-    );
-    const repNodes = nodes.filter(
-      (n) => n.type === 'senator' && n.party === 'r'
-    );
-    const billNodes = nodes.filter((n) => n.type === 'bill');
+      // reset all visual states
+      nodeMerge
+        .select('.node-shape')
+        .attr('stroke', '#333')
+        .attr('stroke-width', 1.5);
 
-    console.log(
-      `Found ${demNodes.length} Democrats, ${repNodes.length} Republicans, ${billNodes.length} Bills`
-    );
+      nodeMerge.select('text').attr('opacity', 0);
 
-    // assign initial positions directly
-    const assignStaticPositions = () => {
+      // apply hover highlights
+      if (hoveredId) {
+        nodeMerge
+          .filter((d: D3Node) => d.id === hoveredId)
+          .select('.node-shape')
+          .attr('stroke', '#f39c12')
+          .attr('stroke-width', 3);
+
+        nodeMerge
+          .filter((d: D3Node) => d.id === hoveredId)
+          .select('text')
+          .attr('opacity', 1);
+
+        // update tooltip content and position
+        const hoveredNode = nodes.find((n) => n.id === hoveredId);
+        if (hoveredNode) {
+          updateTooltip(hoveredNode);
+        }
+      } else {
+        // hide tooltip when no node is hovered
+        tooltip.style('visibility', 'hidden');
+      }
+
+      // apply drag highlights
+      if (draggedId) {
+        nodeMerge
+          .filter((d: D3Node) => d.id === draggedId)
+          .select('.node-shape')
+          .attr('stroke', '#f39c12')
+          .attr('stroke-width', 3);
+      }
+
+      function dragStarted(
+        this: SVGElement,
+        event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
+        d: D3Node
+      ) {
+        // set dragged node id in yjs
+        ySharedState.set('draggedNodeId', d.id);
+
+        // raise the element to the front
+        d3.select(this).raise().classed('active', true);
+      }
+
+      function dragged(
+        this: SVGElement,
+        event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
+        d: D3Node
+      ) {
+        // update node position visually
+        d.x = event.x;
+        d.y = event.y;
+
+        d3.select(this).attr('transform', `translate(${event.x},${event.y})`);
+
+        // update connected links visually
+        linkMerge
+          .filter((l: D3Link) => {
+            const source = l.source as D3Node;
+            const target = l.target as D3Node;
+            return source.id === d.id || target.id === d.id;
+          })
+          .attr('x1', (l: D3Link) => {
+            const source = l.source as D3Node;
+            return source.id === d.id ? event.x : source.x || 0;
+          })
+          .attr('y1', (l: D3Link) => {
+            const source = l.source as D3Node;
+            return source.id === d.id ? event.y : source.y || 0;
+          })
+          .attr('x2', (l: D3Link) => {
+            const target = l.target as D3Node;
+            return target.id === d.id ? event.x : target.x || 0;
+          })
+          .attr('y2', (l: D3Link) => {
+            const target = l.target as D3Node;
+            return target.id === d.id ? event.y : target.y || 0;
+          });
+
+        // update position in yjs (in real-time)
+        doc!.transact(() => {
+          for (let i = 0; i < yNodes.length; i++) {
+            const nodeMap = yNodes.get(i);
+            if (nodeMap.get('id') === d.id) {
+              nodeMap.set('x', d.x);
+              nodeMap.set('y', d.y);
+              break;
+            }
+          }
+        });
+
+        // update tooltip if this is the hovered node
+        if (hoveredId === d.id) {
+          updateTooltip(d);
+        }
+      }
+
+      function dragEnded(this: SVGElement) {
+        // clear dragged state in yjs
+        ySharedState.set('draggedNodeId', null);
+
+        // remove active class
+        d3.select(this).classed('active', false);
+      }
+
+      // add drag behavior
+      nodeMerge.call(
+        d3
+          .drag<SVGGElement, D3Node>()
+          .on('start', dragStarted)
+          .on('drag', dragged)
+          .on('end', dragEnded)
+      );
+
+      // handle node hover
+      nodeMerge.on(
+        'mouseenter',
+        function (this: Element, _: MouseEvent, d: D3Node) {
+          // set hovered node id in yjs
+          ySharedState.set('hoveredNodeId', d.id);
+        }
+      );
+
+      nodeMerge.on('mouseleave', function (this: Element) {
+        // clear hovered node id in yjs
+        ySharedState.set('hoveredNodeId', null);
+      });
+
+      // check if initialization is needed
+      const needsInitialLayout = nodes.some(
+        (node) => node.x === fixedWidth / 2 && node.y === fixedHeight / 2
+      );
+
+      if (needsInitialLayout) {
+        initializeLayout(nodes);
+      }
+    };
+
+    // function to update the d3 tooltip
+    const updateTooltip = (node: D3Node) => {
+      tooltip.style('visibility', 'visible');
+
+      // position tooltip in top-left corner
+      tooltip.attr('transform', 'translate(10,10)');
+
+      // update content
+      tooltip.select('.tt-id').text(`id: ${node.id}`);
+      tooltip.select('.tt-name').text(`name: ${node.name}`);
+      tooltip.select('.tt-type').text(`type: ${node.type}`);
+
+      if (node.type === 'senator') {
+        tooltip
+          .select('.tt-detail1')
+          .text(`party: ${node.party?.toUpperCase()}`);
+        tooltip.select('.tt-detail2').text(`state: ${node.state}`);
+      } else if (node.type === 'bill') {
+        tooltip.select('.tt-detail1').text(`status: ${node.status}`);
+        tooltip
+          .select('.tt-detail2')
+          .text(
+            `pos: (${Math.round(node.x || 0)}, ${Math.round(node.y || 0)})`
+          );
+      }
+    };
+
+    // function to initialize layout
+    const initializeLayout = (nodes: D3Node[]) => {
+      console.log('initializing layout');
+
+      // get counts for layout arrangement
+      const demNodes = nodes.filter(
+        (n) => n.type === 'senator' && n.party === 'd'
+      );
+      const repNodes = nodes.filter(
+        (n) => n.type === 'senator' && n.party === 'r'
+      );
+      const billNodes = nodes.filter((n) => n.type === 'bill');
+
+      console.log(
+        `Found ${demNodes.length} Democrats, ${repNodes.length} Republicans, ${billNodes.length} Bills`
+      );
+
       // define columns
       const leftColumnX = fixedWidth * 0.2;
       const rightColumnX = fixedWidth * 0.8;
       const centerColumnX = fixedWidth * 0.5;
 
-      // set vertical spacing for each party - should be same with equal counts
+      // set vertical spacing for each party
       const demSpacing = (fixedHeight * 0.8) / (demNodes.length + 1);
       const repSpacing = (fixedHeight * 0.8) / (repNodes.length + 1);
 
@@ -481,20 +621,13 @@ const SenateVisualization: React.FC = () => {
           }
         });
       });
-    };
-
-    // check if we need to initialize positions
-    const needsInitialLayout = nodes.some(
-      (node) => node.x === fixedWidth / 2 && node.y === fixedHeight / 2
-    );
-
-    if (needsInitialLayout) {
-      console.log('initializing layout');
-
-      // run a simple static layout first
-      assignStaticPositions();
 
       // then refine with force simulation
+      const nodeMap = new Map<string, D3Node>();
+      nodes.forEach((n) => nodeMap.set(n.id, n));
+
+      const links = mapLinksToD3(nodeMap);
+
       const simulation = d3
         .forceSimulation<D3Node>(nodes)
         .force(
@@ -550,301 +683,31 @@ const SenateVisualization: React.FC = () => {
           }
         });
       });
-    }
 
-    // resolve links to use node references
-    const nodeMap = new Map<string, D3Node>();
-    nodes.forEach((n) => nodeMap.set(n.id, n));
+      // update visualization
+      updateVisualization();
+    };
 
-    links.forEach((link) => {
-      if (typeof link.source === 'string') {
-        const sourceNode = nodeMap.get(link.source);
-        if (sourceNode) link.source = sourceNode;
-      }
-      if (typeof link.target === 'string') {
-        const targetNode = nodeMap.get(link.target);
-        if (targetNode) link.target = targetNode;
-      }
-    });
+    // initial update
+    updateVisualization();
 
-    // create arrow marker for sponsor links
-    svg
-      .append('defs')
-      .append('marker')
-      .attr('id', 'arrowhead')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 20)
-      .attr('refY', 0)
-      .attr('orient', 'auto')
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
-      .append('path')
-      .attr('d', 'M0,-5L10,0L0,5')
-      .attr('fill', '#555');
+    // set up observeDeep to update visualization when yjs data changes
+    const observer = () => {
+      updateVisualization();
+    };
 
-    // create links group
-    const linkGroup = svg.append('g').attr('class', 'links');
+    // observe all relevant yjs data
+    yNodes.observeDeep(observer);
+    yLinks.observeDeep(observer);
+    ySharedState.observe(observer);
 
-    // create nodes group
-    const nodeGroup = svg.append('g').attr('class', 'nodes');
-
-    // draw links
-    const link = linkGroup
-      .selectAll('line')
-      .data(links)
-      .enter()
-      .append('line')
-      .attr('stroke', (d) => (d.type === 'sponsor' ? '#555' : '#bbb'))
-      .attr('stroke-width', (d) => (d.type === 'sponsor' ? 2 : 1))
-      .attr('stroke-dasharray', (d) =>
-        d.type === 'cosponsor' ? '3,3' : 'none'
-      )
-      .attr('marker-end', (d) =>
-        d.type === 'sponsor' ? 'url(#arrowhead)' : ''
-      )
-      .attr('x1', (d: D3Link) => {
-        const source = d.source as D3Node;
-        return source.x || 0;
-      })
-      .attr('y1', (d: D3Link) => {
-        const source = d.source as D3Node;
-        return source.y || 0;
-      })
-      .attr('x2', (d: D3Link) => {
-        const target = d.target as D3Node;
-        return target.x || 0;
-      })
-      .attr('y2', (d: D3Link) => {
-        const target = d.target as D3Node;
-        return target.y || 0;
-      });
-
-    // Save link reference
-    linksRef.current = link as d3.Selection<
-      SVGLineElement,
-      D3Link,
-      SVGGElement,
-      unknown
-    >;
-
-    // Create node elements without drag handler initially
-    const node = nodeGroup
-      .selectAll('g')
-      .data(nodes)
-      .enter()
-      .append('g')
-      .attr('class', 'node')
-      .attr('data-id', (d) => d.id)
-      .attr('data-uuid', (d) => d.uuid)
-      .attr('transform', (d) => `translate(${d.x || 0},${d.y || 0})`);
-
-    // Save node reference
-    nodesRef.current = node as d3.Selection<
-      SVGGElement,
-      D3Node,
-      SVGGElement,
-      unknown
-    >;
-
-    // Create circles for senators
-    node
-      .filter((d) => d.type === 'senator')
-      .append('circle')
-      .attr('r', 10)
-      .attr('fill', (d) =>
-        d.party === 'd' ? '#3498db' : d.party === 'r' ? '#e74c3c' : '#95a5a6'
-      )
-      .attr('stroke', '#333')
-      .attr('stroke-width', 1.5)
-      .attr('class', 'node-shape'); // add class for selecting shapes
-
-    // Create rectangles for bills
-    node
-      .filter((d) => d.type === 'bill')
-      .append('rect')
-      .attr('x', -8)
-      .attr('y', -8)
-      .attr('width', 16)
-      .attr('height', 16)
-      .attr('fill', '#95a5a6')
-      .attr('stroke', '#333')
-      .attr('stroke-width', 1.5)
-      .attr('class', 'node-shape'); // add class for selecting shapes
-
-    // Add text labels
-    node
-      .append('text')
-      .attr('dx', 15)
-      .attr('dy', '.35em')
-      .attr('font-size', '10px')
-      .text((d) => d.name)
-      .attr('opacity', 0)
-      .attr('pointer-events', 'none'); // disable pointer events on text
-
-    // Define a simplified drag handler using function declaration for "this" context
-
-    function dragStarted(
-      this: SVGElement,
-      event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
-      d: D3Node
-    ) {
-      // Set the dragged node ID
-      draggedNodeIdRef.current = d.id;
-
-      // raise the element to the front and add active class
-      d3.select(this).raise().classed('active', true);
-    }
-
-    function dragged(
-      this: SVGElement,
-      event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
-      d: D3Node
-    ) {
-      // Update node position
-      d.x = event.x;
-      d.y = event.y;
-
-      // Update visual position
-      d3.select(this).attr('transform', `translate(${event.x},${event.y})`);
-
-      // Update connected links
-      link
-        .filter((l: D3Link) => {
-          const source = l.source as D3Node;
-          const target = l.target as D3Node;
-          return source.id === d.id || target.id === d.id;
-        })
-        .attr('x1', (l: D3Link) => {
-          const source = l.source as D3Node;
-          return source.id === d.id ? event.x : source.x || 0;
-        })
-        .attr('y1', (l: D3Link) => {
-          const source = l.source as D3Node;
-          return source.id === d.id ? event.y : source.y || 0;
-        })
-        .attr('x2', (l: D3Link) => {
-          const target = l.target as D3Node;
-          return target.id === d.id ? event.x : target.x || 0;
-        })
-        .attr('y2', (l: D3Link) => {
-          const target = l.target as D3Node;
-          return target.id === d.id ? event.y : target.y || 0;
-        });
-
-      // Sync with YJS during dragging for real-time updates
-      // Using a single transaction for each update is more efficient
-      doc!.transact(() => {
-        for (let i = 0; i < yNodes.length; i++) {
-          const nodeMap = yNodes.get(i);
-          if (nodeMap.get('id') === d.id) {
-            nodeMap.set('x', d.x);
-            nodeMap.set('y', d.y);
-            break;
-          }
-        }
-      });
-    }
-
-    /* eslint-disable @typescript-eslint/no-unused-vars */
-    function dragEnded(
-      this: SVGElement,
-      event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
-      d: D3Node
-    ) {
-      // Clear the dragged node ID
-      draggedNodeIdRef.current = null;
-
-      // Remove the active class
-      d3.select(this).classed('active', false);
-    }
-    /* eslint-enable @typescript-eslint/no-unused-vars */
-
-    // Apply drag behavior to nodes
-    node.call(
-      d3
-        .drag<SVGGElement, D3Node>()
-        .on('start', dragStarted)
-        .on('drag', dragged)
-        .on('end', dragEnded)
-    );
-
-    // Add hover behaviors with debounce to prevent flickering
-    node
-      .selectAll<SVGElement, D3Node>('.node-shape') // only attach hover to shapes
-      .on('mouseenter', function (this: Element, _: PointerEvent, d: D3Node) {
-        // Clear any existing hover timer
-        if (hoverTimerRef.current) {
-          clearTimeout(hoverTimerRef.current);
-          hoverTimerRef.current = null;
-        }
-
-        const nodeData = getNodeDataById(d.id);
-        if (nodeData) {
-          // Set local state for tooltip
-          setHoveredNode(nodeData);
-          lastHoveredIdRef.current = d.id;
-
-          // Immediate visual feedback for this client
-          const parentElement = this.parentElement;
-          if (parentElement) {
-            const parentNode = d3.select(parentElement);
-            parentNode
-              .select('.node-shape')
-              .attr('stroke', '#f39c12')
-              .attr('stroke-width', 3);
-
-            parentNode.select('text').attr('opacity', 1);
-          }
-
-          // Update shared state with slight delay
-          hoverTimerRef.current = setTimeout(() => {
-            if (lastHoveredIdRef.current === d.id) {
-              ySharedState.set('hoveredNodeId', d.id);
-            }
-          }, 50);
-        }
-      })
-      .on('mouseleave', function (this: Element) {
-        // Clear any pending hover timer
-        if (hoverTimerRef.current) {
-          clearTimeout(hoverTimerRef.current);
-          hoverTimerRef.current = null;
-        }
-
-        // Immediate visual feedback for this client
-        const parentElement = this.parentElement;
-        if (parentElement) {
-          const parentNode = d3.select(parentElement);
-          parentNode
-            .select('.node-shape')
-            .attr('stroke', '#333')
-            .attr('stroke-width', 1.5);
-
-          parentNode.select('text').attr('opacity', 0);
-        }
-
-        // Set local state for tooltip
-        setHoveredNode(null);
-        const previousHoveredId = lastHoveredIdRef.current;
-        lastHoveredIdRef.current = null;
-
-        // Clear shared state with slight delay
-        hoverTimerRef.current = setTimeout(() => {
-          // Only clear if we were the ones who set it
-          if (ySharedState.get('hoveredNodeId') === previousHoveredId) {
-            ySharedState.set('hoveredNodeId', null);
-          }
-        }, 100);
-      });
-
-    // Store svg reference
-    svgRef.current = svg as d3.Selection<
-      SVGSVGElement,
-      unknown,
-      null,
-      undefined
-    >;
-  }, [syncStatus, nodesData, linksData, doc]);
+    // cleanup observers when component unmounts
+    return () => {
+      yNodes.unobserveDeep(observer);
+      yLinks.unobserveDeep(observer);
+      ySharedState.unobserve(observer);
+    };
+  }, [syncStatus, doc, yNodes, yLinks, ySharedState]);
 
   // placeholder rendering while waiting for sync
   if (!syncStatus) {
@@ -869,6 +732,7 @@ const SenateVisualization: React.FC = () => {
     );
   }
 
+  // just return the container for d3, no react tooltip
   return (
     <div
       style={{
@@ -881,53 +745,6 @@ const SenateVisualization: React.FC = () => {
       }}
     >
       <div ref={d3Container} style={{ width: '100%', height: '100%' }} />
-
-      {/* hover info panel */}
-      {hoveredNode && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '10px',
-            left: '10px',
-            background: 'rgba(255, 255, 255, 0.85)',
-            padding: '8px 12px',
-            borderRadius: '4px',
-            boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-            fontSize: '12px',
-            pointerEvents: 'none', // prevent panel from blocking svg interactions
-          }}
-        >
-          <div>
-            <strong>id:</strong> {hoveredNode.id}
-          </div>
-          <div>
-            <strong>name:</strong> {hoveredNode.name}
-          </div>
-          <div>
-            <strong>type:</strong> {hoveredNode.type}
-          </div>
-          {hoveredNode.type === 'senator' && (
-            <>
-              <div>
-                <strong>party:</strong>{' '}
-                {(hoveredNode as SenatorNodeData).party.toUpperCase()}
-              </div>
-              <div>
-                <strong>state:</strong> {(hoveredNode as SenatorNodeData).state}
-              </div>
-            </>
-          )}
-          {hoveredNode.type === 'bill' && (
-            <div>
-              <strong>status:</strong> {(hoveredNode as BillNodeData).status}
-            </div>
-          )}
-          <div>
-            <strong>pos:</strong> ({hoveredNode.x.toFixed(0)},{' '}
-            {hoveredNode.y.toFixed(0)})
-          </div>
-        </div>
-      )}
     </div>
   );
 };
