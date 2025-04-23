@@ -171,10 +171,21 @@ const SenateVisualization: React.FC = () => {
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
   const [userId] = useState<string>(() => crypto.randomUUID());
   const [userName] = useState<string>(
-    () => `User-${Math.floor(Math.random() * 10)}`
+    () => `User-${Math.floor(Math.random() * 1000)}`
   );
   const [userColor] = useState<string>(() => {
-    const colors = ['#9b59b6', '#f39c12'];
+    const colors = [
+      '#9b59b6', // purple
+      '#f39c12', // orange
+      '#16a085', // teal
+      '#ff69b4', // hot pink
+      '#2ecc71', // vibrant green
+      '#ffcc00', // golden yellow
+      '#00bcd4', // cyan
+      '#8e44ad', // deeper purple
+      '#ff8c00', // dark orange
+      '#1abc9c', // aqua green
+    ];
     return colors[Math.floor(Math.random() * colors.length)];
   });
 
@@ -624,16 +635,16 @@ const SenateVisualization: React.FC = () => {
       // add cursor shape
       newCursors
         .append('path')
-        .attr('d', 'M0,0 L12,12 L7,12 L10,20 L6,18 L4,24 L0,0') // simple cursor shape
+        .attr('d', 'M0,0 L24,12 L12,12 L12,24 L0,0')
         .attr('fill', (d) => d.state.user.color)
         .attr('stroke', '#000')
-        .attr('stroke-width', 1);
+        .attr('stroke-width', 2);
 
       // add user name only for remote cursors
       newCursors
         .filter((d) => !d.isLocal)
         .append('text')
-        .attr('x', 15)
+        .attr('x', 25)
         .attr('y', 15)
         .attr('font-size', '14px')
         .attr('fill', (d) => d.state.user.color)
