@@ -299,49 +299,99 @@ const SenateVisualization: React.FC = () => {
     // create nodes group
     const nodeGroup = svg.append('g').attr('class', 'nodes');
 
-    // create tooltip group - new d3 tooltip
+    // create tooltip group with modern styling
     const tooltip = svg
       .append('g')
       .attr('class', 'tooltip')
-      .style('visibility', 'hidden');
+      .attr('transform', 'translate(0,0)');
 
-    // tooltip background
+    // tooltip background with modern gray gradient
+    const tooltipWidth = fixedWidth * 0.25;
+    const tooltipHeight = fixedHeight;
+
+    // add gradient for tooltip
+    const tooltipGradient = svg.append('defs').append('linearGradient');
+
+    tooltipGradient
+      .attr('id', 'tooltip-gradient')
+      .attr('x1', '0%')
+      .attr('y1', '0%')
+      .attr('x2', '0%')
+      .attr('y2', '100%');
+
+    tooltipGradient
+      .append('stop')
+      .attr('offset', '0%')
+      .attr('stop-color', '#1a202c')
+      .attr('stop-opacity', 0.98);
+
+    tooltipGradient
+      .append('stop')
+      .attr('offset', '100%')
+      .attr('stop-color', '#171923')
+      .attr('stop-opacity', 0.98);
+
     tooltip
       .append('rect')
-      .attr('rx', 4)
-      .attr('ry', 4)
-      .attr('width', 180)
-      .attr('height', 120)
-      .attr('fill', 'rgba(255, 255, 255, 0.85)')
-      .attr('stroke', '#ccc');
+      .attr('width', tooltipWidth)
+      .attr('height', tooltipHeight)
+      .attr('fill', 'url(#tooltip-gradient)')
+      .attr('rx', 12)
+      .attr('ry', 12);
 
-    // tooltip content containers
-    const tooltipContent = tooltip.append('g');
+    // tooltip content containers with text wrapping
+    const tooltipContent = tooltip
+      .append('g')
+      .attr('transform', `translate(20, 40)`);
+
     tooltipContent
       .append('text')
       .attr('class', 'tt-id')
-      .attr('y', 20)
-      .attr('x', 10);
+      .attr('x', 0)
+      .attr('y', 0)
+      .attr('font-size', '24px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '300');
+
     tooltipContent
       .append('text')
       .attr('class', 'tt-name')
-      .attr('y', 40)
-      .attr('x', 10);
+      .attr('x', 0)
+      .attr('y', 35) // increased spacing for larger text
+      .attr('font-size', '24px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '300');
+
     tooltipContent
       .append('text')
       .attr('class', 'tt-type')
-      .attr('y', 60)
-      .attr('x', 10);
+      .attr('x', 0)
+      .attr('y', 70) // increased spacing
+      .attr('font-size', '24px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '300');
+
     tooltipContent
       .append('text')
       .attr('class', 'tt-detail1')
-      .attr('y', 80)
-      .attr('x', 10);
+      .attr('x', 0)
+      .attr('y', 105) // increased spacing
+      .attr('font-size', '24px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '300');
+
     tooltipContent
       .append('text')
       .attr('class', 'tt-detail2')
-      .attr('y', 100)
-      .attr('x', 10);
+      .attr('x', 0)
+      .attr('y', 140) // increased spacing
+      .attr('font-size', '24px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '300');
+
+    // adjust the main visualization area
+    linkGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
+    nodeGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
 
     // helper function to convert node maps to d3 nodes
     const mapNodesToD3 = (): D3Node[] => {
@@ -425,9 +475,9 @@ const SenateVisualization: React.FC = () => {
         .enter()
         .append('line')
         .attr('stroke', (d) => (d.type === 'sponsor' ? '#555' : '#bbb'))
-        .attr('stroke-width', (d) => (d.type === 'sponsor' ? 2 : 1))
+        .attr('stroke-width', (d) => (d.type === 'sponsor' ? 3 : 1.5))
         .attr('stroke-dasharray', (d) =>
-          d.type === 'cosponsor' ? '3,3' : 'none'
+          d.type === 'cosponsor' ? '5,5' : 'none'
         )
         .attr('marker-end', (d) =>
           d.type === 'sponsor' ? 'url(#arrowhead)' : ''
@@ -471,39 +521,39 @@ const SenateVisualization: React.FC = () => {
         .attr('data-id', (d) => d.id)
         .attr('data-uuid', (d) => d.uuid);
 
-      // create senator nodes
+      // create senator nodes with larger radius
       nodeEnter
         .filter((d) => d.type === 'senator')
         .append('circle')
-        .attr('r', 10)
+        .attr('r', 15)
         .attr('fill', (d) =>
           d.party === 'd' ? '#3498db' : d.party === 'r' ? '#e74c3c' : '#95a5a6'
         )
         .attr('stroke', '#333')
-        .attr('stroke-width', 1.5)
+        .attr('stroke-width', 2)
         .attr('class', 'node-shape');
 
-      // create bill nodes
+      // create bill nodes with larger size
       nodeEnter
         .filter((d) => d.type === 'bill')
         .append('rect')
-        .attr('x', -8)
-        .attr('y', -8)
-        .attr('width', 16)
-        .attr('height', 16)
+        .attr('x', -12)
+        .attr('y', -12)
+        .attr('width', 24)
+        .attr('height', 24)
         .attr('fill', '#95a5a6')
         .attr('stroke', '#333')
-        .attr('stroke-width', 1.5)
+        .attr('stroke-width', 2)
         .attr('class', 'node-shape');
 
-      // add text labels
+      // add text labels with larger font - but don't show on hover
       nodeEnter
         .append('text')
-        .attr('dx', 15)
+        .attr('dx', 20)
         .attr('dy', '.35em')
-        .attr('font-size', '10px')
+        .attr('font-size', '12px')
         .text((d) => d.name)
-        .attr('opacity', 0)
+        .attr('opacity', 0) // keep hidden
         .attr('pointer-events', 'none');
 
       // merge nodes
@@ -523,11 +573,9 @@ const SenateVisualization: React.FC = () => {
       nodeMerge
         .select('.node-shape')
         .attr('stroke', '#333')
-        .attr('stroke-width', 1.5);
+        .attr('stroke-width', 2);
 
-      nodeMerge.select('text').attr('opacity', 0);
-
-      // apply hover highlights
+      // apply hover highlights - but don't show text
       if (hoveredId) {
         nodeMerge
           .filter((d: D3Node) => d.id === hoveredId)
@@ -535,19 +583,14 @@ const SenateVisualization: React.FC = () => {
           .attr('stroke', '#f39c12')
           .attr('stroke-width', 3);
 
-        nodeMerge
-          .filter((d: D3Node) => d.id === hoveredId)
-          .select('text')
-          .attr('opacity', 1);
-
         // update tooltip content and position
         const hoveredNode = nodes.find((n) => n.id === hoveredId);
         if (hoveredNode) {
           updateTooltip(hoveredNode);
         }
       } else {
-        // hide tooltip when no node is hovered
-        tooltip.style('visibility', 'hidden');
+        // show default tooltip message when no node is hovered
+        updateTooltip(null);
       }
 
       // apply drag highlights
@@ -665,30 +708,46 @@ const SenateVisualization: React.FC = () => {
       }
     };
 
-    // function to update the d3 tooltip
-    const updateTooltip = (node: D3Node) => {
-      tooltip.style('visibility', 'visible');
+    // function to update the tooltip content
+    const updateTooltip = (node: D3Node | null) => {
+      if (node) {
+        tooltip.select('.tt-title').text('Node Details');
 
-      // position tooltip in top-left corner
-      tooltip.attr('transform', 'translate(10,10)');
+        tooltip.select('.tt-id').text(`ID: ${node.id}`);
 
-      // update content
-      tooltip.select('.tt-id').text(`id: ${node.id}`);
-      tooltip.select('.tt-name').text(`name: ${node.name}`);
-      tooltip.select('.tt-type').text(`type: ${node.type}`);
+        tooltip.select('.tt-name').text(`Name: ${node.name}`);
 
-      if (node.type === 'senator') {
         tooltip
-          .select('.tt-detail1')
-          .text(`party: ${node.party?.toUpperCase()}`);
-        tooltip.select('.tt-detail2').text(`state: ${node.state}`);
-      } else if (node.type === 'bill') {
-        tooltip.select('.tt-detail1').text(`status: ${node.status}`);
-        tooltip
-          .select('.tt-detail2')
+          .select('.tt-type')
           .text(
-            `pos: (${Math.round(node.x || 0)}, ${Math.round(node.y || 0)})`
+            `Type: ${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`
           );
+
+        if (node.type === 'senator') {
+          tooltip
+            .select('.tt-detail1')
+            .text(`Party: ${node.party?.toUpperCase()}`);
+
+          tooltip.select('.tt-detail2').text(`State: ${node.state}`);
+        } else if (node.type === 'bill') {
+          tooltip.select('.tt-detail1').text(`Status: ${node.status}`);
+
+          tooltip
+            .select('.tt-detail2')
+            .text(
+              `Position: (${Math.round(node.x || 0)}, ${Math.round(
+                node.y || 0
+              )})`
+            );
+        }
+      } else {
+        // Default state
+        tooltip.select('.tt-title').text('Select a Node');
+        tooltip.select('.tt-id').text('');
+        tooltip.select('.tt-name').text('Hover over a node');
+        tooltip.select('.tt-type').text('to view its details');
+        tooltip.select('.tt-detail1').text('');
+        tooltip.select('.tt-detail2').text('');
       }
     };
 
@@ -696,7 +755,6 @@ const SenateVisualization: React.FC = () => {
     const initializeLayout = (nodes: D3Node[]) => {
       console.log('initializing layout');
 
-      // get counts for layout arrangement
       const demNodes = nodes.filter(
         (n) => n.type === 'senator' && n.party === 'd'
       );
@@ -705,25 +763,29 @@ const SenateVisualization: React.FC = () => {
       );
       const billNodes = nodes.filter((n) => n.type === 'bill');
 
-      console.log(
-        `Found ${demNodes.length} Democrats, ${repNodes.length} Republicans, ${billNodes.length} Bills`
-      );
+      // define columns - adjusted for tooltip width and better centering
+      const availableWidth = fixedWidth - tooltipWidth;
+      const graphCenter = tooltipWidth + availableWidth * 0.18; // moved center point left
+      const spread = availableWidth * 0.45; // significantly increased spread
 
-      // define columns
-      const leftColumnX = fixedWidth * 0.2;
-      const rightColumnX = fixedWidth * 0.8;
-      const centerColumnX = fixedWidth * 0.5;
+      const leftColumnX = graphCenter - spread;
+      const rightColumnX = graphCenter + spread;
+      const centerColumnX = graphCenter;
 
-      // set vertical spacing for each party
-      const demSpacing = (fixedHeight * 0.8) / (demNodes.length + 1);
-      const repSpacing = (fixedHeight * 0.8) / (repNodes.length + 1);
+      // adjust bill grid width to match new spread
+      const billGridWidth = availableWidth * 0.4; // increased bill grid width
+      const billGridHeight = fixedHeight * 0.85; // increased height for more vertical spread
+
+      // set vertical spacing for each party with better vertical centering
+      const verticalPadding = fixedHeight * 0.1; // reduced padding to use more vertical space
+      const demSpacing =
+        (fixedHeight - 2 * verticalPadding) / (demNodes.length + 1);
+      const repSpacing =
+        (fixedHeight - 2 * verticalPadding) / (repNodes.length + 1);
 
       // set vertical spacing for bills
       const billRows = Math.ceil(Math.sqrt(billNodes.length));
       const billCols = Math.ceil(billNodes.length / billRows);
-
-      const billGridWidth = fixedWidth * 0.3;
-      const billGridHeight = fixedHeight * 0.7;
 
       const billColSpacing = billGridWidth / (billCols || 1);
       const billRowSpacing = billGridHeight / (billRows || 1);
@@ -734,14 +796,14 @@ const SenateVisualization: React.FC = () => {
 
       // position democratic senators in left column
       demNodes.forEach((node, i) => {
-        const verticalPos = (i + 1) * demSpacing + fixedHeight * 0.1;
+        const verticalPos = verticalPadding + (i + 1) * demSpacing;
         node.x = leftColumnX;
         node.y = verticalPos;
       });
 
       // position republican senators in right column
       repNodes.forEach((node, i) => {
-        const verticalPos = (i + 1) * repSpacing + fixedHeight * 0.1;
+        const verticalPos = verticalPadding + (i + 1) * repSpacing;
         node.x = rightColumnX;
         node.y = verticalPos;
       });
@@ -782,9 +844,9 @@ const SenateVisualization: React.FC = () => {
           d3
             .forceLink<D3Node, D3Link>(links)
             .id((d) => d.id)
-            .distance(70)
+            .distance(150) // increased link distance
         )
-        .force('charge', d3.forceManyBody().strength(-150))
+        .force('charge', d3.forceManyBody().strength(-300)) // increased repulsion
         .force(
           'x',
           d3
@@ -809,7 +871,7 @@ const SenateVisualization: React.FC = () => {
           'collision',
           d3
             .forceCollide<D3Node>()
-            .radius((d) => (d.type === 'senator' ? 20 : 15))
+            .radius((d) => (d.type === 'senator' ? 35 : 30)) // increased collision radius
         )
         .stop();
 
@@ -837,6 +899,9 @@ const SenateVisualization: React.FC = () => {
 
     // initial update
     updateVisualization();
+
+    // initialize tooltip with default message
+    updateTooltip(null);
 
     // set up observeDeep to update visualization when yjs data changes
     const observer = () => {
