@@ -23,8 +23,118 @@ interface D3Link extends d3.SimulationLinkDatum<D3Node> {
   type: string;
 }
 
+// helper function to compact/prune the yjs document
+function pruneYDoc(doc: Y.Doc) {
+  console.log('[Yjs] Running document compaction...');
+  const beforeSize = Y.encodeStateAsUpdate(doc).byteLength;
+
+  try {
+    // create a new temporary document
+    const tempDoc = new Y.Doc();
+
+    // get current data from original doc
+    const originalNodes = doc.getArray<Y.Map<NodeMapValue>>('senateNodes');
+    const originalLinks = doc.getArray<Y.Map<LinkMapValue>>('senateLinks');
+    const originalSharedState = doc.getMap<string | boolean | null>(
+      'senateSharedState'
+    );
+
+    // get references to collections in temp doc
+    const tempNodes = tempDoc.getArray<Y.Map<NodeMapValue>>('senateNodes');
+    const tempLinks = tempDoc.getArray<Y.Map<LinkMapValue>>('senateLinks');
+    const tempSharedState = tempDoc.getMap<string | boolean | null>(
+      'senateSharedState'
+    );
+
+    // copy nodes data
+    tempDoc.transact(() => {
+      // copy nodes
+      for (let i = 0; i < originalNodes.length; i++) {
+        const originalNode = originalNodes.get(i);
+        const newNode = new Y.Map<NodeMapValue>();
+
+        // copy all properties
+        originalNode.forEach((value: NodeMapValue, key: string) => {
+          newNode.set(key, value);
+        });
+
+        tempNodes.push([newNode]);
+      }
+
+      // copy links
+      for (let i = 0; i < originalLinks.length; i++) {
+        const originalLink = originalLinks.get(i);
+        const newLink = new Y.Map<LinkMapValue>();
+
+        // copy all properties
+        originalLink.forEach((value: LinkMapValue, key: string) => {
+          newLink.set(key, value);
+        });
+
+        tempLinks.push([newLink]);
+      }
+
+      // copy shared state
+      originalSharedState.forEach(
+        (value: string | boolean | null, key: string) => {
+          tempSharedState.set(key, value);
+        }
+      );
+    });
+
+    // create snapshot of the cleaned data
+    const cleanSnapshot = Y.encodeStateAsUpdate(tempDoc);
+
+    // clear original doc
+    doc.transact(() => {
+      while (originalNodes.length > 0) originalNodes.delete(0);
+      while (originalLinks.length > 0) originalLinks.delete(0);
+      originalSharedState.forEach((_: string | boolean | null, key: string) =>
+        originalSharedState.delete(key)
+      );
+    });
+
+    // apply clean snapshot to original doc
+    Y.applyUpdate(doc, cleanSnapshot);
+
+    const afterSize = Y.encodeStateAsUpdate(doc).byteLength;
+    const reduction = Math.max(
+      0,
+      Math.round((1 - afterSize / beforeSize) * 100)
+    );
+    console.log(
+      `[Yjs] Compaction complete: ${beforeSize.toLocaleString()} bytes → ${afterSize.toLocaleString()} bytes (${reduction}% reduction)`
+    );
+
+    // cleanup temporary doc
+    tempDoc.destroy();
+  } catch (err) {
+    console.error('[Yjs] Compaction failed:', err);
+
+    // fallback to simple snapshot-based compaction if the more aggressive approach fails
+    try {
+      const snapshot = Y.encodeStateAsUpdate(doc);
+      doc.transact(() => {
+        Y.applyUpdate(doc, snapshot);
+      });
+
+      const afterSize = Y.encodeStateAsUpdate(doc).byteLength;
+      const reduction = Math.max(
+        0,
+        Math.round((1 - afterSize / beforeSize) * 100)
+      );
+      console.log(
+        `[Yjs] Simple compaction complete: ${beforeSize.toLocaleString()} bytes → ${afterSize.toLocaleString()} bytes (${reduction}% reduction)`
+      );
+    } catch (fallbackErr) {
+      console.error('[Yjs] Fallback compaction also failed:', fallbackErr);
+    }
+  }
+}
+
 const SenateVisualization: React.FC = () => {
   const doc = useContext(YjsContext);
+  // reference to the d3 container
   const d3Container = useRef<HTMLDivElement | null>(null);
 
   // setup yjs shared arrays
@@ -56,6 +166,36 @@ const SenateVisualization: React.FC = () => {
     }, 2000);
     return () => clearTimeout(timeout);
   }, [doc]);
+
+  // performance monitoring intervals and compaction
+  useEffect(() => {
+    if (!doc || !syncStatus) return;
+
+    // monitor yjs document size
+    const yjsMonitor = setInterval(() => {
+      const byteLength = Y.encodeStateAsUpdate(doc).byteLength;
+      console.log(`[Yjs] Document size: ${byteLength} bytes`);
+    }, 60000); // every 60 seconds
+
+    // monitor DOM elements
+    const domMonitor = setInterval(() => {
+      const nodeCount = document.querySelectorAll('g.node').length;
+      const tooltipCount = document.querySelectorAll('g.tooltip').length;
+      console.log(`[DOM] ${nodeCount} nodes, ${tooltipCount} tooltips in DOM`);
+    }, 10000);
+
+    // periodic document compaction to prevent unbounded growth
+    const compactionInterval = setInterval(() => {
+      pruneYDoc(doc);
+    }, 10000); // every minute
+
+    // cleanup intervals on unmount
+    return () => {
+      clearInterval(yjsMonitor);
+      clearInterval(domMonitor);
+      clearInterval(compactionInterval);
+    };
+  }, [doc, syncStatus]);
 
   // initialize graph data from json if ynodes is empty after sync
   useEffect(() => {
@@ -107,6 +247,13 @@ const SenateVisualization: React.FC = () => {
       yNodes.push(initialNodes);
       yLinks.push(initialLinks);
     });
+
+    // run initial compaction after data is loaded
+    setTimeout(() => {
+      if (doc) {
+        pruneYDoc(doc);
+      }
+    }, 5000); // wait 5 seconds after data load
   }, [syncStatus, doc, yNodes, yLinks]);
 
   // d3 visualization setup and update
@@ -714,25 +861,86 @@ const SenateVisualization: React.FC = () => {
     return (
       <div
         style={{
+          width: fixedWidth,
+          height: fixedHeight,
+          position: 'relative',
           display: 'flex',
           justifyContent: 'center',
           alignItems: 'center',
-          height: '100vh',
-          flexDirection: 'column',
           background: '#f0f0f0',
+          overflow: 'hidden',
+          borderRadius: '8px',
+          boxShadow: 'inset 0 0 10px rgba(0,0,0,0.05)',
         }}
       >
-        <div style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>
-          waiting for sync...
-        </div>
-        <div style={{ fontSize: '1rem', color: '#666' }}>
-          connecting to peers
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+            padding: '2rem',
+            maxWidth: '600px',
+            background: 'rgba(255,255,255,0.8)',
+            borderRadius: '12px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '2rem',
+              marginBottom: '0.5rem',
+              fontWeight: 500,
+              color: '#333',
+            }}
+          >
+            Senate Visualization
+          </div>
+          <div
+            style={{
+              fontSize: '1.25rem',
+              marginBottom: '1.5rem',
+              color: '#555',
+            }}
+          >
+            Waiting for synchronization...
+          </div>
+          <div
+            style={{
+              marginTop: '1rem',
+              width: '100%',
+              height: '6px',
+              background: '#eee',
+              borderRadius: '8px',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: '40%',
+                height: '100%',
+                background: 'linear-gradient(to right, #3498db, #2980b9)',
+                animation: 'progressAnimation 2s infinite',
+                borderRadius: '8px',
+              }}
+            >
+              <style>
+                {`
+                  @keyframes progressAnimation {
+                    0% { transform: translateX(-100%); }
+                    100% { transform: translateX(250%); }
+                  }
+                `}
+              </style>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
-  // just return the container for d3, no react tooltip
+  // just return the container for d3
   return (
     <div
       style={{
