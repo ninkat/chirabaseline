@@ -8,6 +8,20 @@ import senateData from '../assets/foafagain.json'; // import the json data
 type NodeMapValue = string | number | boolean | undefined;
 type LinkMapValue = string;
 
+// awareness states
+interface AwarenessState {
+  user: {
+    name: string;
+    color: string;
+    id: string;
+  };
+  cursor: {
+    x: number;
+    y: number;
+    nodeId?: string;
+  };
+}
+
 // d3 specific types - extend SimulationNodeDatum with our required properties
 interface D3Node extends d3.SimulationNodeDatum {
   id: string;
@@ -133,7 +147,11 @@ function pruneYDoc(doc: Y.Doc) {
 }
 
 const SenateVisualization: React.FC = () => {
-  const doc = useContext(YjsContext);
+  // get both doc and awareness from context
+  const yjsContext = useContext(YjsContext);
+  const doc = yjsContext?.doc;
+  const awareness = yjsContext?.awareness;
+
   // reference to the d3 container
   const d3Container = useRef<HTMLDivElement | null>(null);
 
@@ -151,6 +169,14 @@ const SenateVisualization: React.FC = () => {
 
   // only keep syncStatus state (not d3 related)
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
+  const [userId] = useState<string>(() => crypto.randomUUID());
+  const [userName] = useState<string>(
+    () => `User-${Math.floor(Math.random() * 10)}`
+  );
+  const [userColor] = useState<string>(() => {
+    const colors = ['#9b59b6', '#f39c12'];
+    return colors[Math.floor(Math.random() * colors.length)];
+  });
 
   // fixed dimensions for the svg canvas
   const fixedWidth = 1280;
@@ -166,6 +192,29 @@ const SenateVisualization: React.FC = () => {
     }, 2000);
     return () => clearTimeout(timeout);
   }, [doc]);
+
+  // set up initial awareness state
+  useEffect(() => {
+    if (!awareness) return;
+
+    // set initial awareness state
+    awareness.setLocalState({
+      user: {
+        name: userName,
+        color: userColor,
+        id: userId,
+      },
+      cursor: {
+        x: 0,
+        y: 0,
+      },
+    } as AwarenessState);
+
+    // cleanup on unmount
+    return () => {
+      awareness.setLocalState(null);
+    };
+  }, [awareness, userId, userName, userColor]);
 
   // performance monitoring intervals and compaction
   useEffect(() => {
@@ -187,7 +236,7 @@ const SenateVisualization: React.FC = () => {
     // periodic document compaction to prevent unbounded growth
     const compactionInterval = setInterval(() => {
       pruneYDoc(doc);
-    }, 10000); // every minute
+    }, 300000); // every 5 minutes, increased from 2 minutes
 
     // cleanup intervals on unmount
     return () => {
@@ -258,7 +307,7 @@ const SenateVisualization: React.FC = () => {
 
   // d3 visualization setup and update
   useEffect(() => {
-    if (!syncStatus || !d3Container.current) return;
+    if (!syncStatus || !d3Container.current || !awareness) return;
 
     // only initialize once
     if (isInitializedRef.current) return;
@@ -276,7 +325,10 @@ const SenateVisualization: React.FC = () => {
       .attr('width', fixedWidth)
       .attr('height', fixedHeight)
       .attr('viewBox', [0, 0, fixedWidth, fixedHeight])
-      .attr('style', 'background: #f0f0f0; max-width: 100%; height: auto;');
+      .attr(
+        'style',
+        'background: #f0f0f0; max-width: 100%; height: auto; cursor: none;'
+      );
 
     // create arrow marker for sponsor links
     svg
@@ -298,6 +350,9 @@ const SenateVisualization: React.FC = () => {
 
     // create nodes group
     const nodeGroup = svg.append('g').attr('class', 'nodes');
+
+    // create cursors group
+    const cursorGroup = svg.append('g').attr('class', 'cursors');
 
     // create tooltip group with modern styling
     const tooltip = svg
@@ -389,9 +444,36 @@ const SenateVisualization: React.FC = () => {
       .attr('fill', '#cbd5e0')
       .attr('font-weight', '300');
 
+    // add divider for presence panel
+    tooltip
+      .append('line')
+      .attr('x1', 20)
+      .attr('y1', fixedHeight - 140)
+      .attr('x2', tooltipWidth - 20)
+      .attr('y2', fixedHeight - 140)
+      .attr('stroke', '#4a5568')
+      .attr('stroke-width', 1);
+
+    // add presence section title
+    tooltip
+      .append('text')
+      .attr('x', 20)
+      .attr('y', fixedHeight - 110)
+      .attr('font-size', '18px')
+      .attr('fill', '#cbd5e0')
+      .attr('font-weight', '500')
+      .text('online users');
+
+    // create presence list container within tooltip
+    const presenceList = tooltip
+      .append('g')
+      .attr('class', 'presence-list')
+      .attr('transform', `translate(20, ${fixedHeight - 90})`);
+
     // adjust the main visualization area
     linkGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
     nodeGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
+    cursorGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
 
     // helper function to convert node maps to d3 nodes
     const mapNodesToD3 = (): D3Node[] => {
@@ -441,6 +523,131 @@ const SenateVisualization: React.FC = () => {
         links.push({ source, target, type });
       }
       return links;
+    };
+
+    // function to update presence list
+    const updatePresenceList = () => {
+      if (!awareness) return;
+
+      const states = Array.from(awareness.getStates().entries())
+        .map(([clientId, state]) => ({
+          clientId,
+          state: state as AwarenessState,
+        }))
+        .filter((item) => item.state && item.state.user)
+        .slice(0, 2); // limit to maximum 2 users
+
+      // update presence list
+      const userItems = presenceList
+        .selectAll<SVGGElement, { clientId: number; state: AwarenessState }>(
+          'g.user-item'
+        )
+        .data(states, (d) => d.clientId.toString());
+
+      // remove old items
+      userItems.exit().remove();
+
+      // create new items with larger size for tooltip
+      const newUserItems = userItems
+        .enter()
+        .append('g')
+        .attr('class', 'user-item')
+        .attr('transform', (d, i) => `translate(0, ${i * 35})`); // more spacing
+
+      // add color indicators - larger
+      newUserItems
+        .append('circle')
+        .attr('cx', 12)
+        .attr('cy', 12)
+        .attr('r', 8) // larger radius
+        .attr('fill', (d) => d.state.user.color);
+
+      // add user names - larger
+      newUserItems
+        .append('text')
+        .attr('x', 30) // more space from circle
+        .attr('y', 17) // better vertical alignment
+        .attr('fill', '#cbd5e0')
+        .attr('font-size', '18px') // larger font
+        .text((d) => d.state.user.name);
+
+      // update existing items
+      userItems
+        .attr('transform', (d, i) => `translate(0, ${i * 35})`)
+        .select('circle')
+        .attr('fill', (d) => d.state.user.color);
+
+      userItems.select('text').text((d) => d.state.user.name);
+    };
+
+    // function to update user cursors
+    const updateCursors = () => {
+      if (!awareness) return;
+
+      const cursorStates = Array.from(awareness.getStates().entries())
+        .map(([clientId, state]) => ({
+          clientId,
+          state: state as AwarenessState,
+          isLocal:
+            state &&
+            (state as AwarenessState).user &&
+            (state as AwarenessState).user.id === userId,
+        }))
+        .filter((item) => item.state && item.state.cursor && item.state.user);
+
+      // update cursor visualization
+      const cursors = cursorGroup
+        .selectAll<
+          SVGGElement,
+          { clientId: number; state: AwarenessState; isLocal: boolean }
+        >('g.cursor')
+        .data(cursorStates, (d) => d.clientId.toString());
+
+      // remove old cursors
+      cursors.exit().remove();
+
+      // create new cursors
+      const newCursors = cursors
+        .enter()
+        .append('g')
+        .attr(
+          'class',
+          (d) => `cursor ${d.isLocal ? 'local-cursor' : 'remote-cursor'}`
+        )
+        .attr('pointer-events', 'none') // make sure cursors don't block interactions
+        .attr('transform', (d) => {
+          const x = d.state.cursor.x || 0;
+          const y = d.state.cursor.y || 0;
+          return `translate(${x}, ${y})`;
+        });
+
+      // add cursor shape
+      newCursors
+        .append('path')
+        .attr('d', 'M0,0 L12,12 L7,12 L10,20 L6,18 L4,24 L0,0') // simple cursor shape
+        .attr('fill', (d) => d.state.user.color)
+        .attr('stroke', '#000')
+        .attr('stroke-width', 1);
+
+      // add user name only for remote cursors
+      newCursors
+        .filter((d) => !d.isLocal)
+        .append('text')
+        .attr('x', 15)
+        .attr('y', 15)
+        .attr('font-size', '14px')
+        .attr('fill', (d) => d.state.user.color)
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 0.5)
+        .attr('paint-order', 'stroke')
+        .text((d) => d.state.user.name);
+
+      // update existing cursors
+      cursors.attr('transform', (d) => {
+        const x = d.state.cursor.x || 0;
+        const y = d.state.cursor.y || 0;
+        return `translate(${x}, ${y})`;
+      });
     };
 
     // function to update the visualization
@@ -602,6 +809,10 @@ const SenateVisualization: React.FC = () => {
           .attr('stroke-width', 3);
       }
 
+      // update presence data
+      updatePresenceList();
+      updateCursors();
+
       function dragStarted(
         this: SVGElement,
         event: d3.D3DragEvent<SVGElement, D3Node, D3Node>,
@@ -664,6 +875,29 @@ const SenateVisualization: React.FC = () => {
         // update tooltip if this is the hovered node
         if (hoveredId === d.id) {
           updateTooltip(d);
+        }
+
+        // also update cursor position in awareness during drag
+        if (awareness) {
+          // Get source event position - using sourceEvent which is the original DOM event
+          const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
+
+          // adjust for tooltip width
+          const x = svgX - tooltipWidth;
+          const y = svgY;
+
+          // update cursor position in awareness
+          const currentState = awareness.getLocalState() as AwarenessState;
+          if (currentState) {
+            awareness.setLocalState({
+              ...currentState,
+              cursor: {
+                x: x,
+                y: y,
+                nodeId: d.id, // also track which node is being dragged
+              },
+            });
+          }
         }
       }
 
@@ -897,6 +1131,66 @@ const SenateVisualization: React.FC = () => {
       updateVisualization();
     };
 
+    // add mouse move tracking to update cursor position
+    svg.on('mousemove', function (event) {
+      if (!awareness) return;
+
+      // use d3.pointer to get coordinates in SVG space, accounting for all transformations
+      const [svgX, svgY] = d3.pointer(event, svg.node());
+
+      // adjust for the tooltip width
+      const x = svgX - tooltipWidth;
+      const y = svgY;
+
+      // update local awareness state with cursor position
+      const currentState = awareness.getLocalState() as AwarenessState;
+      if (currentState) {
+        awareness.setLocalState({
+          ...currentState,
+          cursor: {
+            x: x,
+            y: y,
+            nodeId: currentState.cursor?.nodeId,
+          },
+        });
+      }
+    });
+
+    // add touch move tracking for mobile devices
+    svg.on('touchmove', function (event) {
+      if (!awareness) return;
+      event.preventDefault();
+
+      if (!event.touches[0]) return;
+
+      // use d3.pointer with first touch point
+      const touch = event.touches[0];
+      // create a synthetic mouse event to use with d3.pointer
+      const touchEvent = new MouseEvent('mousemove', {
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+      });
+
+      const [svgX, svgY] = d3.pointer(touchEvent, svg.node());
+
+      // adjust for the tooltip width
+      const x = svgX - tooltipWidth;
+      const y = svgY;
+
+      // update local awareness state with cursor position
+      const currentState = awareness.getLocalState() as AwarenessState;
+      if (currentState) {
+        awareness.setLocalState({
+          ...currentState,
+          cursor: {
+            x: x,
+            y: y,
+            nodeId: currentState.cursor?.nodeId,
+          },
+        });
+      }
+    });
+
     // initial update
     updateVisualization();
 
@@ -908,18 +1202,44 @@ const SenateVisualization: React.FC = () => {
       updateVisualization();
     };
 
+    // observe awareness changes to update user presence and cursors
+    const awarenessObserver = () => {
+      // log awareness states for debugging
+      console.log(
+        'Awareness update:',
+        awareness?.getStates().size,
+        'users connected'
+      );
+
+      // Update with throttling: update cursor positions more frequently than the presence list
+      updateCursors(); // update cursor positions immediately
+
+      // Throttle presence list updates to avoid unnecessary re-renders
+      if (
+        !awarenessObserver.lastPresenceUpdate ||
+        Date.now() - awarenessObserver.lastPresenceUpdate > 1000
+      ) {
+        updatePresenceList();
+        awarenessObserver.lastPresenceUpdate = Date.now();
+      }
+    };
+    // Add property to the function for throttling
+    awarenessObserver.lastPresenceUpdate = 0;
+
     // observe all relevant yjs data
     yNodes.observeDeep(observer);
     yLinks.observeDeep(observer);
     ySharedState.observe(observer);
+    awareness.on('change', awarenessObserver);
 
     // cleanup observers when component unmounts
     return () => {
       yNodes.unobserveDeep(observer);
       yLinks.unobserveDeep(observer);
       ySharedState.unobserve(observer);
+      awareness.off('change', awarenessObserver);
     };
-  }, [syncStatus, doc, yNodes, yLinks, ySharedState]);
+  }, [syncStatus, doc, yNodes, yLinks, ySharedState, awareness, userId]);
 
   // placeholder rendering while waiting for sync
   if (!syncStatus) {
@@ -960,7 +1280,7 @@ const SenateVisualization: React.FC = () => {
               color: '#333',
             }}
           >
-            Senate Visualization
+            senate visualization
           </div>
           <div
             style={{
@@ -969,7 +1289,17 @@ const SenateVisualization: React.FC = () => {
               color: '#555',
             }}
           >
-            Waiting for synchronization...
+            waiting for synchronization...
+          </div>
+          <div
+            style={{
+              fontSize: '1rem',
+              marginTop: '0.5rem',
+              color: userColor,
+              fontWeight: 'bold',
+            }}
+          >
+            connected as: {userName}
           </div>
           <div
             style={{
@@ -985,7 +1315,7 @@ const SenateVisualization: React.FC = () => {
               style={{
                 width: '40%',
                 height: '100%',
-                background: 'linear-gradient(to right, #3498db, #2980b9)',
+                background: `linear-gradient(to right, ${userColor}, #2980b9)`,
                 animation: 'progressAnimation 2s infinite',
                 borderRadius: '8px',
               }}
