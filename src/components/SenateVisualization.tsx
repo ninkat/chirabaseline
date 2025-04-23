@@ -641,16 +641,28 @@ const SenateVisualization: React.FC = () => {
         .attr('stroke-width', 2);
 
       // add user name only for remote cursors
-      newCursors
-        .filter((d) => !d.isLocal)
-        .append('text')
-        .attr('x', 25)
-        .attr('y', 15)
-        .attr('font-size', '14px')
+      const remoteLabels = newCursors.filter((d) => !d.isLocal);
+
+      // add background box for remote cursor labels
+      remoteLabels
+        .append('rect')
+        .attr('x', 23)
+        .attr('y', 18)
+        .attr('rx', 4) // rounded corners
+        .attr('ry', 4)
+        .attr('padding', 4)
         .attr('fill', (d) => d.state.user.color)
-        .attr('stroke', '#fff')
-        .attr('stroke-width', 0.5)
-        .attr('paint-order', 'stroke')
+        .attr('width', (d) => d.state.user.name.length * 8 + 16) // dynamic width based on text length
+        .attr('height', 24);
+
+      // add text on top of the box
+      remoteLabels
+        .append('text')
+        .attr('x', 31) // add padding inside the box
+        .attr('y', 35)
+        .attr('font-size', '14px')
+        .attr('fill', '#ffffff') // white text
+        .attr('font-weight', '500')
         .text((d) => d.state.user.name);
 
       // update existing cursors
