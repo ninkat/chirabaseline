@@ -2,14 +2,16 @@ import React from 'react';
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { Awareness } from 'y-protocols/awareness';
+import getWebsocketUrl from '../utils/websocketUtils';
 
-// do not change this file
-// create a shared Y.Doc instance
+// create a shared y.doc instance
 const doc = new Y.Doc();
-// create a WebRTC provider for local collaboration
-// we need to keep this even though it's "unused" - it handles the WebRTC connections
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const provider = new WebrtcProvider('react-yjs-room', doc);
+// create a webrtc provider for local collaboration
+// we need to keep this even though it's "unused" - it handles the webrtc connections
+
+const provider = new WebrtcProvider('react-yjs-room', doc, {
+  signaling: [getWebsocketUrl()],
+});
 
 // create awareness instance
 const awareness = provider.awareness;
