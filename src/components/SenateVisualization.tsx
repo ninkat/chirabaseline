@@ -20,6 +20,12 @@ interface AwarenessState {
     y: number;
     nodeId?: string;
   };
+  brushSelection?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  };
 }
 
 // d3 specific types - extend SimulationNodeDatum with our required properties
@@ -160,7 +166,7 @@ const SenateVisualization: React.FC = () => {
   const yLinks = doc!.getArray<Y.Map<LinkMapValue>>('senateLinks');
 
   // add shared state with yjs
-  const ySharedState = doc!.getMap<string | boolean | null>(
+  const ySharedState = doc!.getMap<string | boolean | null | string[]>(
     'senateSharedState'
   );
 
@@ -319,6 +325,10 @@ const SenateVisualization: React.FC = () => {
 
     console.log('initializing d3 visualization');
 
+    // define dimensions early
+    const tooltipWidth = fixedWidth * 0.25;
+    const tooltipHeight = fixedHeight;
+
     // clear any existing content
     d3.select(d3Container.current).selectAll('*').remove();
 
@@ -333,6 +343,50 @@ const SenateVisualization: React.FC = () => {
         'style',
         'background: #f0f0f0; max-width: 100%; height: auto; cursor: none;'
       );
+
+    // create brush group first so it's behind other elements
+    const brushGroup = svg
+      .append('g')
+      .attr('class', 'brush')
+      .attr('transform', `translate(${tooltipWidth}, 0)`);
+
+    // create a custom local brush element (hidden initially)
+    const localBrushRect = brushGroup
+      .append('rect')
+      .attr('class', 'local-brush-rect')
+      .attr('pointer-events', 'none')
+      .attr('fill', `${userColor}33`) // exact same transparency as remote
+      .attr('stroke', userColor)
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '3,3')
+      .attr('visibility', 'hidden'); // hidden by default
+
+    // initialize brush
+    const brush = d3
+      .brush()
+      .extent([
+        [0, 0],
+        [fixedWidth - tooltipWidth, fixedHeight],
+      ])
+      .on('start', brushStarted)
+      .on('brush', brushed)
+      .on('end', brushEnded);
+
+    // apply brush to the group
+    brushGroup.call(brush);
+
+    // hide the default d3 brush visual elements completely
+    brushGroup
+      .select('.selection')
+      .attr('fill', 'none')
+      .attr('stroke', 'none')
+      .attr('stroke-width', 0);
+
+    brushGroup
+      .selectAll('.handle')
+      .attr('fill', 'none')
+      .attr('stroke', 'none')
+      .attr('stroke-width', 0);
 
     // create arrow marker for sponsor links
     svg
@@ -358,15 +412,17 @@ const SenateVisualization: React.FC = () => {
     // create cursors group
     const cursorGroup = svg.append('g').attr('class', 'cursors');
 
+    // create remote brushes group
+    const remoteBrushesGroup = svg
+      .append('g')
+      .attr('class', 'remote-brushes')
+      .attr('transform', `translate(${tooltipWidth}, 0)`);
+
     // create tooltip group with modern styling
     const tooltip = svg
       .append('g')
       .attr('class', 'tooltip')
       .attr('transform', 'translate(0,0)');
-
-    // tooltip background with modern gray gradient
-    const tooltipWidth = fixedWidth * 0.25;
-    const tooltipHeight = fixedHeight;
 
     // add gradient for tooltip
     const tooltipGradient = svg.append('defs').append('linearGradient');
@@ -666,6 +722,64 @@ const SenateVisualization: React.FC = () => {
       });
     };
 
+    // function to update remote brush selections
+    const updateRemoteBrushes = () => {
+      if (!awareness) return;
+
+      const brushStates = Array.from(awareness.getStates().entries())
+        .map(([clientId, state]) => ({
+          clientId,
+          state: state as AwarenessState,
+          isLocal:
+            state &&
+            (state as AwarenessState).user &&
+            (state as AwarenessState).user.id === userId,
+        }))
+        .filter(
+          (item) =>
+            item.state &&
+            item.state.brushSelection &&
+            item.state.user &&
+            !item.isLocal
+        ); // only remote brushes
+
+      // update brush visualization
+      const brushes = remoteBrushesGroup
+        .selectAll<
+          SVGRectElement,
+          { clientId: number; state: AwarenessState; isLocal: boolean }
+        >('rect.remote-brush')
+        .data(brushStates, (d) => d.clientId.toString());
+
+      // remove old brushes
+      brushes.exit().remove();
+
+      // create new brushes
+      const newBrushes = brushes
+        .enter()
+        .append('rect')
+        .attr('class', 'remote-brush')
+        .attr('pointer-events', 'none')
+        .attr('fill', (d) => `${d.state.user.color}33`) // add transparency
+        .attr('stroke', (d) => d.state.user.color)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3');
+
+      // update all brushes
+      newBrushes
+        .merge(brushes)
+        .attr('x', (d) => d.state.brushSelection!.x0)
+        .attr('y', (d) => d.state.brushSelection!.y0)
+        .attr(
+          'width',
+          (d) => d.state.brushSelection!.x1 - d.state.brushSelection!.x0
+        )
+        .attr(
+          'height',
+          (d) => d.state.brushSelection!.y1 - d.state.brushSelection!.y0
+        );
+    };
+
     // function to update the visualization
     const updateVisualization = () => {
       // get current data
@@ -789,7 +903,7 @@ const SenateVisualization: React.FC = () => {
       );
 
       // get hover and drag state from yjs
-      const hoveredId = ySharedState.get('hoveredNodeId') as string;
+      const hoveredIds = (ySharedState.get('hoveredNodeIds') as string[]) || [];
       const draggedId = ySharedState.get('draggedNodeId') as string;
 
       // reset all visual states
@@ -798,22 +912,20 @@ const SenateVisualization: React.FC = () => {
         .attr('stroke', '#333')
         .attr('stroke-width', 2);
 
-      // apply hover highlights - but don't show text
-      if (hoveredId) {
+      // apply hover highlights to multiple nodes
+      if (hoveredIds.length > 0) {
         nodeMerge
-          .filter((d: D3Node) => d.id === hoveredId)
+          .filter((d: D3Node) => hoveredIds.includes(d.id))
           .select('.node-shape')
           .attr('stroke', '#f39c12')
           .attr('stroke-width', 3);
 
-        // update tooltip content and position
-        const hoveredNode = nodes.find((n) => n.id === hoveredId);
-        if (hoveredNode) {
-          updateTooltip(hoveredNode);
-        }
+        // update tooltip content with all highlighted nodes
+        const hoveredNodes = nodes.filter((n) => hoveredIds.includes(n.id));
+        updateSelectedNodesInfo(hoveredNodes);
       } else {
         // show default tooltip message when no node is hovered
-        updateTooltip(null);
+        updateSelectedNodesInfo([]);
       }
 
       // apply drag highlights
@@ -828,6 +940,7 @@ const SenateVisualization: React.FC = () => {
       // update presence data
       updatePresenceList();
       updateCursors();
+      updateRemoteBrushes();
 
       function dragStarted(
         this: SVGElement,
@@ -889,8 +1002,8 @@ const SenateVisualization: React.FC = () => {
         });
 
         // update tooltip if this is the hovered node
-        if (hoveredId === d.id) {
-          updateTooltip(d);
+        if (hoveredIds.includes(d.id)) {
+          updateSelectedNodesInfo(d);
         }
 
         // also update cursor position in awareness during drag
@@ -938,14 +1051,29 @@ const SenateVisualization: React.FC = () => {
       nodeMerge.on(
         'mouseenter',
         function (this: Element, _: MouseEvent, d: D3Node) {
-          // set hovered node id in yjs
-          ySharedState.set('hoveredNodeId', d.id);
+          // get current hovered nodes array
+          const hoveredIds =
+            (ySharedState.get('hoveredNodeIds') as string[]) || [];
+
+          // check if we're adding to existing selection with shift key
+          if (_.shiftKey && hoveredIds.length > 0) {
+            // add this node to array if not already present
+            if (!hoveredIds.includes(d.id)) {
+              ySharedState.set('hoveredNodeIds', [...hoveredIds, d.id]);
+            }
+          } else {
+            // replace with single node selection
+            ySharedState.set('hoveredNodeIds', [d.id]);
+          }
         }
       );
 
-      nodeMerge.on('mouseleave', function (this: Element) {
-        // clear hovered node id in yjs
-        ySharedState.set('hoveredNodeId', null);
+      nodeMerge.on('mouseleave', function (this: Element, _: MouseEvent) {
+        // only clear if shift key isn't pressed (to allow multi-select)
+        if (!_.shiftKey) {
+          // clear hovered node ids in yjs
+          ySharedState.set('hoveredNodeIds', []);
+        }
       });
 
       // check if initialization is needed
@@ -959,47 +1087,123 @@ const SenateVisualization: React.FC = () => {
     };
 
     // function to update the tooltip content
-    const updateTooltip = (node: D3Node | null) => {
-      if (node) {
-        tooltip.select('.tt-title').text('Node Details');
+    const updateSelectedNodesInfo = (nodes: D3Node[] | D3Node | null) => {
+      // Convert single node to array or use empty array if null
+      const nodesArray = Array.isArray(nodes) ? nodes : nodes ? [nodes] : [];
 
-        tooltip.select('.tt-id').text(`ID: ${node.id}`);
+      if (nodesArray.length === 0) {
+        // show default tooltip message when no nodes are selected
+        tooltip.select('.tt-title').text('select a node');
+        tooltip.select('.tt-id').text('');
+        tooltip.select('.tt-name').text('hover over a node');
+        tooltip.select('.tt-type').text('or use brush to select multiple');
+        tooltip.select('.tt-detail1').text('');
+        tooltip.select('.tt-detail2').text('');
+      } else if (nodesArray.length === 1) {
+        // single node - just show the name
+        const node = nodesArray[0];
+        tooltip.select('.tt-title').text('node selected');
+        tooltip.select('.tt-id').text('');
+        tooltip.select('.tt-name').text(node.name);
+        tooltip.select('.tt-type').text('');
+        tooltip.select('.tt-detail1').text('');
+        tooltip.select('.tt-detail2').text('');
+      } else {
+        // multiple nodes - show count and list of names
+        tooltip.select('.tt-title').text(`${nodesArray.length} nodes selected`);
+        tooltip.select('.tt-id').text('');
 
-        tooltip.select('.tt-name').text(`Name: ${node.name}`);
+        // just show first few node names
+        const maxToShow = 3;
+        const namesToShow = nodesArray.slice(0, maxToShow).map((n) => n.name);
+        const additionalCount = nodesArray.length - maxToShow;
 
+        tooltip.select('.tt-name').text(namesToShow.join(', '));
         tooltip
           .select('.tt-type')
-          .text(
-            `Type: ${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`
-          );
-
-        if (node.type === 'senator') {
-          tooltip
-            .select('.tt-detail1')
-            .text(`Party: ${node.party?.toUpperCase()}`);
-
-          tooltip.select('.tt-detail2').text(`State: ${node.state}`);
-        } else if (node.type === 'bill') {
-          tooltip.select('.tt-detail1').text(`Status: ${node.status}`);
-
-          tooltip
-            .select('.tt-detail2')
-            .text(
-              `Position: (${Math.round(node.x || 0)}, ${Math.round(
-                node.y || 0
-              )})`
-            );
-        }
-      } else {
-        // Default state
-        tooltip.select('.tt-title').text('Select a Node');
-        tooltip.select('.tt-id').text('');
-        tooltip.select('.tt-name').text('Hover over a node');
-        tooltip.select('.tt-type').text('to view its details');
+          .text(additionalCount > 0 ? `and ${additionalCount} more...` : '');
         tooltip.select('.tt-detail1').text('');
         tooltip.select('.tt-detail2').text('');
       }
     };
+
+    // brush event handlers
+    function brushStarted() {
+      // clear existing hover selections
+      ySharedState.set('hoveredNodeIds', []);
+    }
+
+    function brushed(event: d3.D3BrushEvent<unknown>) {
+      if (!event.selection) {
+        // Hide the custom brush rect when no selection
+        localBrushRect.attr('visibility', 'hidden');
+        return;
+      }
+
+      // get current brush selection
+      const [[x0, y0], [x1, y1]] = event.selection as [
+        [number, number],
+        [number, number]
+      ];
+
+      // update local awareness with brush selection
+      if (awareness) {
+        const currentState = awareness.getLocalState() as AwarenessState;
+        if (currentState) {
+          awareness.setLocalState({
+            ...currentState,
+            brushSelection: { x0, y0, x1, y1 },
+          });
+        }
+      }
+
+      // Update the custom brush rectangle to exactly match remote brushes
+      localBrushRect
+        .attr('visibility', 'visible')
+        .attr('x', x0)
+        .attr('y', y0)
+        .attr('width', x1 - x0)
+        .attr('height', y1 - y0);
+
+      // find nodes within the brush selection
+      const selectedNodes = mapNodesToD3().filter((d) => {
+        // adjust for tooltip width
+        const nodeX = d.x || 0;
+        const nodeY = d.y || 0;
+        return nodeX >= x0 && nodeX <= x1 && nodeY >= y0 && nodeY <= y1;
+      });
+
+      // update shared state with selected node ids
+      const selectedIds = selectedNodes.map((n) => n.id);
+      ySharedState.set('hoveredNodeIds', selectedIds);
+
+      // update tooltip with selected nodes
+      updateSelectedNodesInfo(selectedNodes);
+    }
+
+    function brushEnded(event: d3.D3BrushEvent<unknown>) {
+      // if no selection was made, clear the brush
+      if (!event.selection) {
+        // Hide the custom brush rectangle
+        localBrushRect.attr('visibility', 'hidden');
+
+        // clear brush selection from awareness
+        if (awareness) {
+          const currentState = awareness.getLocalState() as AwarenessState;
+          if (currentState) {
+            const stateWithoutBrush = { ...currentState };
+            if ('brushSelection' in stateWithoutBrush) {
+              delete stateWithoutBrush.brushSelection;
+            }
+            awareness.setLocalState(stateWithoutBrush);
+          }
+        }
+        return;
+      }
+
+      // Keep the custom brush rectangle visible at the end of interaction
+      // No need to update it here as the last brushed event already positioned it correctly
+    }
 
     // function to initialize layout
     const initializeLayout = (nodes: D3Node[]) => {
@@ -1152,6 +1356,7 @@ const SenateVisualization: React.FC = () => {
     let needsVisualizationUpdate = false;
     let needsCursorsUpdate = false;
     let needsPresenceUpdate = false;
+    let needsRemoteBrushesUpdate = false;
     let lastPresenceUpdateTime = 0;
 
     // animation frame loop for device's native refresh rate
@@ -1168,6 +1373,12 @@ const SenateVisualization: React.FC = () => {
       if (needsCursorsUpdate) {
         updateCursors();
         needsCursorsUpdate = false;
+      }
+
+      // process remote brushes updates if needed
+      if (needsRemoteBrushesUpdate) {
+        updateRemoteBrushes();
+        needsRemoteBrushesUpdate = false;
       }
 
       // process presence updates if needed (throttled to once per second)
@@ -1213,7 +1424,7 @@ const SenateVisualization: React.FC = () => {
     updateVisualization();
 
     // initialize tooltip with default message
-    updateTooltip(null);
+    updateSelectedNodesInfo([]);
 
     // set up observeDeep to update visualization when yjs data changes
     const observer = () => {
@@ -1226,7 +1437,13 @@ const SenateVisualization: React.FC = () => {
       // mark that updates are needed rather than updating immediately
       needsCursorsUpdate = true;
       needsPresenceUpdate = true;
+      needsRemoteBrushesUpdate = true;
     };
+
+    // initialize ySharedState if hoveredNodeIds doesn't exist
+    if (!ySharedState.has('hoveredNodeIds')) {
+      ySharedState.set('hoveredNodeIds', []);
+    }
 
     // observe all relevant yjs data
     yNodes.observeDeep(observer);
