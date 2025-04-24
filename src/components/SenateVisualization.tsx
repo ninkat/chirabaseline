@@ -167,7 +167,7 @@ const SenateVisualization: React.FC = () => {
   // reference to track initialization
   const isInitializedRef = useRef(false);
 
-  // only keep syncStatus state (not d3 related)
+  // only keep states for non-d3 related variables
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
   const [userId] = useState<string>(() => crypto.randomUUID());
   const [userName] = useState<string>(
@@ -247,7 +247,7 @@ const SenateVisualization: React.FC = () => {
     // periodic document compaction to prevent unbounded growth
     const compactionInterval = setInterval(() => {
       pruneYDoc(doc);
-    }, 300000); // every 5 minutes, increased from 2 minutes
+    }, 300000); // every 5 minutes
 
     // cleanup intervals on unmount
     return () => {
@@ -307,13 +307,6 @@ const SenateVisualization: React.FC = () => {
       yNodes.push(initialNodes);
       yLinks.push(initialLinks);
     });
-
-    // run initial compaction after data is loaded
-    setTimeout(() => {
-      if (doc) {
-        pruneYDoc(doc);
-      }
-    }, 5000); // wait 5 seconds after data load
   }, [syncStatus, doc, yNodes, yLinks]);
 
   // d3 visualization setup and update
@@ -1154,6 +1147,43 @@ const SenateVisualization: React.FC = () => {
       updateVisualization();
     };
 
+    // animation frame related state
+    let animationFrameId: number | null = null;
+    let needsVisualizationUpdate = false;
+    let needsCursorsUpdate = false;
+    let needsPresenceUpdate = false;
+    let lastPresenceUpdateTime = 0;
+
+    // animation frame loop for device's native refresh rate
+    const renderLoop = () => {
+      const now = Date.now();
+
+      // process visualization updates if needed
+      if (needsVisualizationUpdate) {
+        updateVisualization();
+        needsVisualizationUpdate = false;
+      }
+
+      // process cursor updates if needed
+      if (needsCursorsUpdate) {
+        updateCursors();
+        needsCursorsUpdate = false;
+      }
+
+      // process presence updates if needed (throttled to once per second)
+      if (needsPresenceUpdate && now - lastPresenceUpdateTime > 1000) {
+        updatePresenceList();
+        lastPresenceUpdateTime = now;
+        needsPresenceUpdate = false;
+      }
+
+      // continue the animation loop
+      animationFrameId = requestAnimationFrame(renderLoop);
+    };
+
+    // start the animation loop
+    animationFrameId = requestAnimationFrame(renderLoop);
+
     // add mouse move tracking to update cursor position
     svg.on('mousemove', function (event) {
       if (!awareness) return;
@@ -1179,42 +1209,7 @@ const SenateVisualization: React.FC = () => {
       }
     });
 
-    // add touch move tracking for mobile devices
-    svg.on('touchmove', function (event) {
-      if (!awareness) return;
-      event.preventDefault();
-
-      if (!event.touches[0]) return;
-
-      // use d3.pointer with first touch point
-      const touch = event.touches[0];
-      // create a synthetic mouse event to use with d3.pointer
-      const touchEvent = new MouseEvent('mousemove', {
-        clientX: touch.clientX,
-        clientY: touch.clientY,
-      });
-
-      const [svgX, svgY] = d3.pointer(touchEvent, svg.node());
-
-      // adjust for the tooltip width
-      const x = svgX - tooltipWidth;
-      const y = svgY;
-
-      // update local awareness state with cursor position
-      const currentState = awareness.getLocalState() as AwarenessState;
-      if (currentState) {
-        awareness.setLocalState({
-          ...currentState,
-          cursor: {
-            x: x,
-            y: y,
-            nodeId: currentState.cursor?.nodeId,
-          },
-        });
-      }
-    });
-
-    // initial update
+    // initial update to show visualization
     updateVisualization();
 
     // initialize tooltip with default message
@@ -1222,32 +1217,16 @@ const SenateVisualization: React.FC = () => {
 
     // set up observeDeep to update visualization when yjs data changes
     const observer = () => {
-      updateVisualization();
+      // instead of updating immediately, mark that an update is needed
+      needsVisualizationUpdate = true;
     };
 
-    // observe awareness changes to update user presence and cursors
+    // observe awareness changes for user presence and cursors
     const awarenessObserver = () => {
-      // log awareness states for debugging
-      console.log(
-        'Awareness update:',
-        awareness?.getStates().size,
-        'users connected'
-      );
-
-      // Update with throttling: update cursor positions more frequently than the presence list
-      updateCursors(); // update cursor positions immediately
-
-      // Throttle presence list updates to avoid unnecessary re-renders
-      if (
-        !awarenessObserver.lastPresenceUpdate ||
-        Date.now() - awarenessObserver.lastPresenceUpdate > 1000
-      ) {
-        updatePresenceList();
-        awarenessObserver.lastPresenceUpdate = Date.now();
-      }
+      // mark that updates are needed rather than updating immediately
+      needsCursorsUpdate = true;
+      needsPresenceUpdate = true;
     };
-    // Add property to the function for throttling
-    awarenessObserver.lastPresenceUpdate = 0;
 
     // observe all relevant yjs data
     yNodes.observeDeep(observer);
@@ -1255,12 +1234,17 @@ const SenateVisualization: React.FC = () => {
     ySharedState.observe(observer);
     awareness.on('change', awarenessObserver);
 
-    // cleanup observers when component unmounts
+    // cleanup observers and animation frame when component unmounts
     return () => {
       yNodes.unobserveDeep(observer);
       yLinks.unobserveDeep(observer);
       ySharedState.unobserve(observer);
       awareness.off('change', awarenessObserver);
+
+      // cancel the animation frame loop
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
   }, [syncStatus, doc, yNodes, yLinks, ySharedState, awareness, userId]);
 
