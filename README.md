@@ -14,7 +14,7 @@ npm install
 npm run dev
 ```
 
-3. Open [http://localhost:5173](http://localhost:5173) in your browser.
+3. Open http://(your ip address) in your browser.
 
 ## Available Scripts
 
@@ -36,3 +36,21 @@ ryjs/
 ├── public/             # Static assets
 └── vite.config.ts      # Vite configuration
 ```
+
+## Controls
+
+- **Node Interaction**
+
+  - Mouseover over any node
+  - Click any node to permanently select it (click it again to unselect it)
+  - Click and drag nodes to reposition them
+  - Click and drag in empty space to select multiple nodes with a brush selection
+
+- **Navigation**
+
+  - Mouse wheel to zoom in/out
+  - Hold Shift + drag to pan the view
+
+- **Collaboration**
+  - See other users' cursors and brushes in real-time
+  - Changes are synchronized automatically across all connected users (you see what I see)

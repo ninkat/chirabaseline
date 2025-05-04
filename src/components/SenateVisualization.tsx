@@ -26,6 +26,12 @@ interface AwarenessState {
     x1: number;
     y1: number;
   };
+  transform?: {
+    x: number;
+    y: number;
+    k: number;
+  };
+  timestamp?: number;
 }
 
 // d3 specific types - extend SimulationNodeDatum with our required properties
@@ -41,6 +47,13 @@ interface D3Node extends d3.SimulationNodeDatum {
 
 interface D3Link extends d3.SimulationLinkDatum<D3Node> {
   type: string;
+}
+
+// Add this interface near the top with other interfaces
+interface CursorData {
+  state: AwarenessState;
+  clientId: number;
+  isLocal: boolean;
 }
 
 // helper function to compact/prune the yjs document
@@ -173,6 +186,9 @@ const SenateVisualization: React.FC = () => {
   // add client brush selections map
   const yClientBrushSelections = doc!.getMap<string[]>('clientBrushSelections');
 
+  // add click selections map - maps userId to array of selected node ids
+  const yClientClickSelections = doc!.getMap<string[]>('clientClickSelections');
+
   // reference to track initialization
   const isInitializedRef = useRef(false);
 
@@ -201,6 +217,11 @@ const SenateVisualization: React.FC = () => {
   // fixed dimensions for the svg canvas
   const fixedWidth = 1280;
   const fixedHeight = 720;
+
+  // inside SenateVisualization component, after fixedHeight declaration
+  const [currentTransform, setCurrentTransform] = useState<d3.ZoomTransform>(
+    d3.zoomIdentity
+  );
 
   // track sync status (simple timeout approach)
   useEffect(() => {
@@ -347,10 +368,23 @@ const SenateVisualization: React.FC = () => {
         'background: #f0f0f0; max-width: 100%; height: auto; cursor: none;'
       );
 
-    // create brush group first so it's behind other elements
-    const brushGroup = svg
+    // create a root group for all content that will be transformed
+    const root = svg.append('g').attr('class', 'root');
+
+    // move cursor group outside of root so it's not affected by root transform
+    const cursorGroup = svg.append('g').attr('class', 'cursors');
+
+    // move all your existing groups into root
+    const brushGroup = root
       .append('g')
       .attr('class', 'brush')
+      .attr('transform', `translate(${tooltipWidth}, 0)`);
+
+    const linkGroup = root.append('g').attr('class', 'links');
+    const nodeGroup = root.append('g').attr('class', 'nodes');
+    const remoteBrushesGroup = root
+      .append('g')
+      .attr('class', 'remote-brushes')
       .attr('transform', `translate(${tooltipWidth}, 0)`);
 
     // create a custom local brush element (hidden initially)
@@ -371,6 +405,10 @@ const SenateVisualization: React.FC = () => {
         [0, 0],
         [fixedWidth - tooltipWidth, fixedHeight],
       ])
+      .filter((event) => {
+        // only start
+        return event.type === 'mousedown' && !event.shiftKey;
+      })
       .on('start', brushStarted)
       .on('brush', brushed)
       .on('end', brushEnded);
@@ -405,21 +443,6 @@ const SenateVisualization: React.FC = () => {
       .append('path')
       .attr('d', 'M0,-5L10,0L0,5')
       .attr('fill', '#555');
-
-    // create links group
-    const linkGroup = svg.append('g').attr('class', 'links');
-
-    // create nodes group
-    const nodeGroup = svg.append('g').attr('class', 'nodes');
-
-    // create cursors group
-    const cursorGroup = svg.append('g').attr('class', 'cursors');
-
-    // create remote brushes group
-    const remoteBrushesGroup = svg
-      .append('g')
-      .attr('class', 'remote-brushes')
-      .attr('transform', `translate(${tooltipWidth}, 0)`);
 
     // create tooltip group with modern styling
     const tooltip = svg
@@ -928,9 +951,19 @@ const SenateVisualization: React.FC = () => {
         allBrushSelectedIds.push(...nodeIds);
       });
 
-      // combine hover and all clients' brush selections
+      // collect all click selections from all clients
+      const allClickSelectedIds: string[] = [];
+      yClientClickSelections.forEach((nodeIds: string[]) => {
+        allClickSelectedIds.push(...nodeIds);
+      });
+
+      // combine hover, brush selections, and click selections
       const allHighlightedIds = [
-        ...new Set([...hoveredIds, ...allBrushSelectedIds]),
+        ...new Set([
+          ...hoveredIds,
+          ...allBrushSelectedIds,
+          ...allClickSelectedIds,
+        ]),
       ];
 
       // reset all visual states
@@ -941,11 +974,42 @@ const SenateVisualization: React.FC = () => {
 
       // apply hover highlights to any node that is either hovered by cursor OR in any brush selection
       if (allHighlightedIds.length > 0) {
-        nodeMerge
-          .filter((d: D3Node) => allHighlightedIds.includes(d.id))
-          .select('.node-shape')
-          .attr('stroke', '#f39c12')
-          .attr('stroke-width', 3);
+        // First handle hover and brush selections with default orange color
+        const hoveredOrBrushedIds = [
+          ...new Set([...hoveredIds, ...allBrushSelectedIds]),
+        ];
+        if (hoveredOrBrushedIds.length > 0) {
+          nodeMerge
+            .filter((d: D3Node) => hoveredOrBrushedIds.includes(d.id))
+            .select('.node-shape')
+            .attr('stroke', '#f39c12')
+            .attr('stroke-width', 3);
+        }
+
+        // Then handle click selections with user colors
+        yClientClickSelections.forEach(
+          (nodeIds: string[], clientId: string) => {
+            // Get the user's color from awareness
+            let userColor = '#f39c12'; // default fallback color
+            if (awareness) {
+              const states = Array.from(awareness.getStates());
+              const userState = states.find(([, state]) => {
+                const awarenessState = state as AwarenessState;
+                return awarenessState?.user?.id === clientId;
+              });
+              if (userState) {
+                userColor = (userState[1] as AwarenessState).user.color;
+              }
+            }
+
+            // Apply the user's color to their selected nodes
+            nodeMerge
+              .filter((d: D3Node) => nodeIds.includes(d.id))
+              .select('.node-shape')
+              .attr('stroke', userColor)
+              .attr('stroke-width', 3);
+          }
+        );
 
         // update tooltip content with all highlighted nodes
         const highlightedNodes = nodes.filter((n) =>
@@ -970,6 +1034,46 @@ const SenateVisualization: React.FC = () => {
       updatePresenceList();
       updateCursors();
       updateRemoteBrushes();
+
+      // add click handler to nodes
+      nodeMerge.on(
+        'click',
+        function (this: Element, event: MouseEvent, d: D3Node) {
+          event.stopPropagation(); // prevent click from propagating
+
+          // check if node is already selected by another user
+          let isSelectedByOther = false;
+          yClientClickSelections.forEach(
+            (nodeIds: string[], clientId: string) => {
+              if (clientId !== userId && nodeIds.includes(d.id)) {
+                isSelectedByOther = true;
+              }
+            }
+          );
+
+          if (isSelectedByOther) {
+            return; // do nothing if node is selected by another user
+          }
+
+          // get current user's selections
+          const currentSelections = yClientClickSelections.get(userId) || [];
+
+          // toggle selection
+          if (currentSelections.includes(d.id)) {
+            // remove node from selections
+            yClientClickSelections.set(
+              userId,
+              currentSelections.filter((id) => id !== d.id)
+            );
+          } else {
+            // add node to selections
+            yClientClickSelections.set(userId, [...currentSelections, d.id]);
+          }
+
+          // update visualization
+          updateVisualization();
+        }
+      );
 
       function dragStarted(
         this: SVGElement,
@@ -1108,17 +1212,26 @@ const SenateVisualization: React.FC = () => {
         // clear hover selection
         ySharedState.set('hoveredNodeIds', []);
 
-        // Update tooltip to show only brush-selected nodes from all clients
+        // Update tooltip to show brush-selected and click-selected nodes from all clients
         const allBrushSelectedIds: string[] = [];
         yClientBrushSelections.forEach((nodeIds: string[]) => {
           allBrushSelectedIds.push(...nodeIds);
         });
 
-        if (allBrushSelectedIds.length > 0) {
-          const brushSelectedNodes = mapNodesToD3().filter((n) =>
-            allBrushSelectedIds.includes(n.id)
+        const allClickSelectedIds: string[] = [];
+        yClientClickSelections.forEach((nodeIds: string[]) => {
+          allClickSelectedIds.push(...nodeIds);
+        });
+
+        const allSelectedIds = [
+          ...new Set([...allBrushSelectedIds, ...allClickSelectedIds]),
+        ];
+
+        if (allSelectedIds.length > 0) {
+          const selectedNodes = mapNodesToD3().filter((n) =>
+            allSelectedIds.includes(n.id)
           );
-          updateSelectedNodesInfo(brushSelectedNodes);
+          updateSelectedNodesInfo(selectedNodes);
         } else {
           // No nodes selected at all
           updateSelectedNodesInfo([]);
@@ -1602,18 +1715,142 @@ const SenateVisualization: React.FC = () => {
     // start the animation loop
     animationFrameId = requestAnimationFrame(renderLoop);
 
-    // add mouse move tracking to update cursor position
+    // observe awareness changes for user presence and cursors
+    const awarenessObserver = () => {
+      needsCursorsUpdate = true;
+      needsPresenceUpdate = true;
+      needsRemoteBrushesUpdate = true;
+
+      // Check for transform updates from other clients
+      if (awareness) {
+        const states = Array.from(awareness.getStates().entries());
+
+        // Get our current state and transform
+        const localState = awareness.getLocalState() as AwarenessState;
+        const localTimestamp = localState?.timestamp || 0;
+
+        // Find the most recent transform from any client
+        let mostRecentTransform: { x: number; y: number; k: number } | null =
+          null;
+        let mostRecentTimestamp = 0;
+
+        for (const [, state] of states) {
+          const awarenessState = state as AwarenessState;
+          // Consider transforms from all clients, including our own
+          if (awarenessState?.transform) {
+            const timestamp = awarenessState.timestamp || 0;
+            // Only update if this transform is newer than our local one
+            if (timestamp > mostRecentTimestamp && timestamp > localTimestamp) {
+              mostRecentTransform = awarenessState.transform;
+              mostRecentTimestamp = timestamp;
+            }
+          }
+        }
+
+        // If we found a more recent transform, apply it
+        if (mostRecentTransform && mostRecentTimestamp > localTimestamp) {
+          const { x, y, k } = mostRecentTransform;
+
+          // Create a new d3 transform
+          const newTransform = d3.zoomIdentity.translate(x, y).scale(k);
+
+          // Update local transform state
+          setCurrentTransform(newTransform);
+
+          // Apply transform to root group
+          root.attr('transform', newTransform.toString());
+
+          // Update zoom behavior to match new transform WITHOUT triggering the zoom event
+          // This prevents an infinite loop of transform updates
+          const zoomBehavior = zoom as d3.ZoomBehavior<SVGSVGElement, unknown>;
+          if (zoomBehavior.transform) {
+            zoomBehavior.transform(svg, newTransform);
+          }
+
+          // Scale cursors according to new transform
+          cursorGroup
+            .selectAll<SVGGElement, CursorData>('.cursor')
+            .attr('transform', (d) => {
+              const cursorX = d.state.cursor.x || 0;
+              const cursorY = d.state.cursor.y || 0;
+
+              // Transform cursor position to screen space
+              const screenX = cursorX * k + x + tooltipWidth;
+              const screenY = cursorY * k + y;
+
+              return `translate(${screenX}, ${screenY}) scale(${1 / k})`;
+            });
+        }
+      }
+    };
+
+    // create zoom behavior
+    const zoom = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.5, 4])
+      .filter((event) => {
+        if (event.type === 'wheel') return true;
+        if (event.type === 'mousedown' && event.shiftKey) return true;
+        return false;
+      })
+      .on('zoom', (event) => {
+        const transform = event.transform;
+
+        // Update local state
+        setCurrentTransform(transform);
+
+        // Apply transform to root group
+        root.attr('transform', transform.toString());
+
+        // Update shared state through awareness
+        if (awareness) {
+          const currentState = awareness.getLocalState() as AwarenessState;
+          if (currentState) {
+            const newState = {
+              ...currentState,
+              transform: {
+                x: transform.x,
+                y: transform.y,
+                k: transform.k,
+              },
+              timestamp: Date.now(),
+            };
+            awareness.setLocalState(newState);
+          }
+        }
+
+        // Scale and position cursors to maintain screen size and correct position
+        cursorGroup
+          .selectAll<SVGGElement, CursorData>('.cursor')
+          .attr('transform', (d) => {
+            const cursorX = d.state.cursor.x || 0;
+            const cursorY = d.state.cursor.y || 0;
+
+            // Transform cursor position to screen space
+            const screenX = cursorX * transform.k + transform.x + tooltipWidth;
+            const screenY = cursorY * transform.k + transform.y;
+
+            return `translate(${screenX}, ${screenY}) scale(${
+              1 / transform.k
+            })`;
+          });
+      });
+
+    // Apply zoom behavior to svg
+    svg.call(zoom);
+
+    // Update the mouse move handler to account for zoom transform
     svg.on('mousemove', function (event) {
       if (!awareness) return;
 
-      // use d3.pointer to get coordinates in SVG space, accounting for all transformations
+      // Get coordinates in SVG space
       const [svgX, svgY] = d3.pointer(event, svg.node());
 
-      // adjust for the tooltip width
-      const x = svgX - tooltipWidth;
-      const y = svgY;
+      // Adjust for tooltip width and current transform
+      const x = (svgX - tooltipWidth - currentTransform.x) / currentTransform.k;
+      const y = (svgY - currentTransform.y) / currentTransform.k;
 
-      // update local awareness state with cursor position
+      // Update local awareness state with cursor position
       const currentState = awareness.getLocalState() as AwarenessState;
       if (currentState) {
         awareness.setLocalState({
@@ -1639,29 +1876,12 @@ const SenateVisualization: React.FC = () => {
       needsVisualizationUpdate = true;
     };
 
-    // observe awareness changes for user presence and cursors
-    const awarenessObserver = () => {
-      // mark that updates are needed rather than updating immediately
-      needsCursorsUpdate = true;
-      needsPresenceUpdate = true;
-      needsRemoteBrushesUpdate = true;
-    };
-
-    // initialize ySharedState if hoveredNodeIds doesn't exist
-    if (!ySharedState.has('hoveredNodeIds')) {
-      ySharedState.set('hoveredNodeIds', []);
-    }
-
-    // add a map for client brush selections
-    if (!ySharedState.has('clientBrushSelections')) {
-      ySharedState.set('clientBrushSelections', null);
-    }
-
     // observe all relevant yjs data
     yNodes.observeDeep(observer);
     yLinks.observeDeep(observer);
     ySharedState.observe(observer);
     yClientBrushSelections.observe(observer);
+    yClientClickSelections.observe(observer);
     awareness.on('change', awarenessObserver);
 
     // cleanup observers and animation frame when component unmounts
@@ -1670,6 +1890,7 @@ const SenateVisualization: React.FC = () => {
       yLinks.unobserveDeep(observer);
       ySharedState.unobserve(observer);
       yClientBrushSelections.unobserve(observer);
+      yClientClickSelections.unobserve(observer);
       awareness.off('change', awarenessObserver);
 
       // cancel the animation frame loop
