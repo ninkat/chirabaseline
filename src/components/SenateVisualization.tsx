@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { YjsContext } from '../context/YjsContext';
 import * as d3 from 'd3';
 import senateData from '../assets/foafagain.json'; // import the json data
+import VideoFeeds from './VideoFeeds';
 
 // define shared value types for y.map
 type NodeMapValue = string | number | boolean | undefined;
@@ -2007,6 +2008,18 @@ const SenateVisualization: React.FC = () => {
       }}
     >
       <div ref={d3Container} style={{ width: '100%', height: '100%' }} />
+
+      {/* video feeds container */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 10,
+          right: 10,
+          zIndex: 10,
+        }}
+      >
+        <VideoFeeds roomId="senate-video-room" />
+      </div>
     </div>
   );
 };
