@@ -548,6 +548,9 @@ const SenateVisualization: React.FC = () => {
     nodeGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
     cursorGroup.attr('transform', `translate(${tooltipWidth}, 0)`);
 
+    // makes sure the default cursor is invisible at all times
+    svg.selectAll('*').style('cursor', 'inherit');
+
     // helper function to convert node maps to d3 nodes
     const mapNodesToD3 = (): D3Node[] => {
       const nodes: D3Node[] = [];
@@ -1076,32 +1079,21 @@ const SenateVisualization: React.FC = () => {
       // handle node hover
       nodeMerge.on(
         'mouseenter',
-        function (this: Element, _: MouseEvent, d: D3Node) {
-          // get current cursor-hovered nodes array
-          const hoveredIds =
-            (ySharedState.get('hoveredNodeIds') as string[]) || [];
+        function (this: Element, event: MouseEvent, d: D3Node) {
+          // set single node hover
+          ySharedState.set('hoveredNodeIds', [d.id]);
 
-          // check if we're adding to existing hover selection with shift key
-          if (_.shiftKey && hoveredIds.length > 0) {
-            // add this node to hover array if not already present
-            if (!hoveredIds.includes(d.id)) {
-              ySharedState.set('hoveredNodeIds', [...hoveredIds, d.id]);
-            }
-          } else {
-            // replace cursor hover selection (but don't affect brush selection)
-            ySharedState.set('hoveredNodeIds', [d.id]);
-          }
+          // Get all highlighted nodes (from both hover and all clients' brush selections)
+          const hoveredIds = [d.id];
 
-          // Get all highlighted nodes for tooltip update
           // Collect all brush selections from all clients
           const allBrushSelectedIds: string[] = [];
           yClientBrushSelections.forEach((nodeIds: string[]) => {
             allBrushSelectedIds.push(...nodeIds);
           });
 
-          const newHoveredIds = [...hoveredIds, d.id]; // Include the node we just hovered
           const allHighlightedIds = [
-            ...new Set([...newHoveredIds, ...allBrushSelectedIds]),
+            ...new Set([...hoveredIds, ...allBrushSelectedIds]),
           ];
           const allHighlightedNodes = mapNodesToD3().filter((n) =>
             allHighlightedIds.includes(n.id)
@@ -1112,27 +1104,24 @@ const SenateVisualization: React.FC = () => {
         }
       );
 
-      nodeMerge.on('mouseleave', function (this: Element, _: MouseEvent) {
-        // only clear hover selections if shift key isn't pressed
-        if (!_.shiftKey) {
-          // clear only cursor hover ids, not brush selection ids
-          ySharedState.set('hoveredNodeIds', []);
+      nodeMerge.on('mouseleave', function (this: Element) {
+        // clear hover selection
+        ySharedState.set('hoveredNodeIds', []);
 
-          // Update tooltip to show only brush-selected nodes from all clients
-          const allBrushSelectedIds: string[] = [];
-          yClientBrushSelections.forEach((nodeIds: string[]) => {
-            allBrushSelectedIds.push(...nodeIds);
-          });
+        // Update tooltip to show only brush-selected nodes from all clients
+        const allBrushSelectedIds: string[] = [];
+        yClientBrushSelections.forEach((nodeIds: string[]) => {
+          allBrushSelectedIds.push(...nodeIds);
+        });
 
-          if (allBrushSelectedIds.length > 0) {
-            const brushSelectedNodes = mapNodesToD3().filter((n) =>
-              allBrushSelectedIds.includes(n.id)
-            );
-            updateSelectedNodesInfo(brushSelectedNodes);
-          } else {
-            // No nodes selected at all
-            updateSelectedNodesInfo([]);
-          }
+        if (allBrushSelectedIds.length > 0) {
+          const brushSelectedNodes = mapNodesToD3().filter((n) =>
+            allBrushSelectedIds.includes(n.id)
+          );
+          updateSelectedNodesInfo(brushSelectedNodes);
+        } else {
+          // No nodes selected at all
+          updateSelectedNodesInfo([]);
         }
       });
 
@@ -1359,54 +1348,40 @@ const SenateVisualization: React.FC = () => {
     }
 
     function brushEnded(event: d3.D3BrushEvent<unknown>) {
-      // if no selection was made, clear the brush
-      if (!event.selection) {
-        // Hide the custom brush rectangle
-        localBrushRect.attr('visibility', 'hidden');
+      // Hide the custom brush rectangle
+      localBrushRect.attr('visibility', 'hidden');
 
-        // Clear this client's brush selection
-        if (userId) {
-          yClientBrushSelections.set(userId, []);
-        }
+      // Clear this client's brush selection
+      if (userId) {
+        yClientBrushSelections.set(userId, []);
+      }
 
-        // Update cursor position and clear brush selection from awareness
-        if (awareness && event.sourceEvent) {
-          // Get source event position
-          const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
+      // Update cursor position and clear brush selection from awareness
+      if (awareness && event.sourceEvent) {
+        // Get source event position
+        const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
 
-          // adjust for tooltip width
-          const x = svgX - tooltipWidth;
-          const y = svgY;
+        // adjust for tooltip width
+        const x = svgX - tooltipWidth;
+        const y = svgY;
 
-          // update cursor position while removing brush selection
-          const currentState = awareness.getLocalState() as AwarenessState;
-          if (currentState) {
-            const stateWithoutBrush = {
-              ...currentState,
-              cursor: {
-                x: x,
-                y: y,
-                nodeId: currentState.cursor?.nodeId,
-              },
-            };
-            if ('brushSelection' in stateWithoutBrush) {
-              delete stateWithoutBrush.brushSelection;
-            }
-            awareness.setLocalState(stateWithoutBrush);
+        // update cursor position while removing brush selection
+        const currentState = awareness.getLocalState() as AwarenessState;
+        if (currentState) {
+          const stateWithoutBrush = {
+            ...currentState,
+            cursor: {
+              x: x,
+              y: y,
+              nodeId: currentState.cursor?.nodeId,
+            },
+          };
+          if ('brushSelection' in stateWithoutBrush) {
+            delete stateWithoutBrush.brushSelection;
           }
-        } else {
-          // Fall back to just clearing brush selection if no sourceEvent
-          if (awareness) {
-            const currentState = awareness.getLocalState() as AwarenessState;
-            if (currentState) {
-              const stateWithoutBrush = { ...currentState };
-              if ('brushSelection' in stateWithoutBrush) {
-                delete stateWithoutBrush.brushSelection;
-              }
-              awareness.setLocalState(stateWithoutBrush);
-            }
-          }
+          awareness.setLocalState(stateWithoutBrush);
         }
+        brushGroup.call(brush.move, null);
         return;
       }
 
