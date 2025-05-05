@@ -26,6 +26,7 @@ const styles = {
     width: '100%',
     height: '100%',
     objectFit: 'cover' as const,
+    transform: 'scaleX(-1)', // mirror all videos by default
   },
 };
 
