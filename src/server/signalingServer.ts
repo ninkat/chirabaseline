@@ -49,6 +49,21 @@ wss.on('connection', (ws: WebSocket) => {
     })
   );
 
+  /* message types for y-webrtc signaling
+  - publish: used to send signaling data (offers, answers, ice candidates) to other peers in a topic/room.
+  - subscribe: used to subscribe to a topic/room.
+  - unsubscribe: used to unsubscribe from a topic/room.
+  */
+  /* message types for y-webrtc video signaling
+  - join-video-room: used to join a video room.
+  - leave-video-room: used to leave a video room.
+  - existing-peers: used to notify a client about existing peers in a video room.
+  - new-peer: used to notify a client about a new peer in a video room.
+  - peer-left: used to notify a client about a peer leaving a video room.
+  - video-offer: used to send a video offer to a peer.
+  - video-answer: used to send a video answer to a peer.
+  - ice-candidate: used to send an ice candidate to a peer.
+  */
   ws.on('message', (msg) => {
     try {
       const message = JSON.parse(msg.toString());
