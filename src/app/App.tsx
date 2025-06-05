@@ -1,7 +1,7 @@
 import React from 'react';
-import Senate from './SenateVisualization';
+import Display from '../components/Display';
 
-// main app component that centers the senate visualization
+// main app component that centers the display
 export const App: React.FC = () => {
   return (
     <div
@@ -16,7 +16,7 @@ export const App: React.FC = () => {
         overflow: 'hidden',
       }}
     >
-      <Senate />
+      <Display />
     </div>
   );
 };

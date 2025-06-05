@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { useWebRTC } from '../hooks/useWebRTC';
+import { useWebRTC } from '../../hooks/useWebRTC';
 
 interface VideoFeedsProps {
   roomId: string;
@@ -10,7 +10,7 @@ const styles = {
   videoContainer: {
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: '10px',
+    gap: '0px',
   },
   videoItem: {
     width: '240px',
@@ -18,9 +18,10 @@ const styles = {
     backgroundColor: '#2d3748',
     borderRadius: '4px',
     overflow: 'hidden',
+    boxSizing: 'border-box' as const,
   },
   localVideo: {
-    border: '2px solid #3182ce',
+    border: '4px solid #3182ce',
   },
   videoElement: {
     width: '100%',
