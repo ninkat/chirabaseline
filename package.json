@@ -12,10 +12,14 @@
   },
   "dependencies": {
     "@types/d3": "^7.4.3",
+    "@types/topojson": "^3.2.6",
+    "@types/topojson-client": "^3.1.5",
     "d3": "^7.9.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-yjs": "^2.0.1",
+    "topojson": "^3.0.2",
+    "topojson-client": "^3.1.0",
     "ws": "^8.18.1",
     "y-webrtc": "^10.3.0",
     "yjs": "^13.6.24"

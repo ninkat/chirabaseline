@@ -10,14 +10,16 @@ type VisualizationType = 'senate' | 'travel' | 'domi';
 // style constants
 const styles = {
   container: {
-    width: '1280px',
-    height: '720px',
+    width: 'min(1280px, 100vw)',
+    height: 'min(720px, 100vh)',
+    maxWidth: '100vw',
+    maxHeight: '100vh',
     position: 'relative' as const,
     overflow: 'hidden',
   },
   visualizationContainer: {
-    width: '1280px',
-    height: '720px',
+    width: '100%',
+    height: '100%',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
@@ -35,8 +37,8 @@ const styles = {
     border: '1px solid rgba(255, 255, 255, 0.1)',
   },
   sidebarCollapsed: {
-    width: '60px',
-    height: '28px',
+    width: '80px',
+    height: '40px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -50,10 +52,10 @@ const styles = {
     background: 'none',
     border: 'none',
     color: 'white',
-    fontSize: '20px',
+    fontSize: '24px',
     cursor: 'pointer',
-    padding: '8px',
-    borderRadius: '4px',
+    padding: '12px',
+    borderRadius: '6px',
     transition: 'background-color 0.2s ease',
   },
   menuContent: {
@@ -87,7 +89,7 @@ const styles = {
 // main display component with collapsible sidebar
 const Display: React.FC = () => {
   const [currentVisualization, setCurrentVisualization] =
-    useState<VisualizationType>('senate');
+    useState<VisualizationType>('travel');
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   // handle visualization change
