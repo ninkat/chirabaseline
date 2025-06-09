@@ -535,7 +535,11 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     const checkValidation = () => {
       const selectedFlightIds = ySelectedFlights.toArray();
 
-      if (selectedFlightIds.length === 2 && puzzleDescription.current) {
+      if (
+        selectedFlightIds.length === 2 &&
+        puzzleDescription.current &&
+        allFlights.current.length > 0
+      ) {
         const selectedFlights = selectedFlightIds
           .map((id) => allFlights.current.find((f) => f.id === id))
           .filter(Boolean) as Flight[];
@@ -544,17 +548,18 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           const result = validateSelectedFlights(selectedFlights);
           setValidationResult(result);
         }
-      } else {
-        // reset validation when not exactly 2 flights selected
+      } else if (selectedFlightIds.length !== 2) {
+        // only reset to default message if not exactly 2 flights selected
         setValidationResult({ isValid: false, failedCriteria: [] });
       }
+      // if we have 2 flights but puzzle data isn't loaded yet, keep current validation state
     };
 
     ySelectedFlights.observeDeep(checkValidation);
     checkValidation(); // initial check
 
     return () => ySelectedFlights.unobserveDeep(checkValidation);
-  }, [ySelectedFlights]); // removed puzzleDescription dependency since it's checked inside
+  }, [ySelectedFlights]);
 
   // effect to sync transform state from yjs
   useEffect(() => {
@@ -565,12 +570,22 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       const x = (yWorldMapState.get('panX') as number) || 0;
       const y = (yWorldMapState.get('panY') as number) || 0;
 
-      // check for meaningful differences (avoid tiny floating point differences)
+      // always update on first run (when joining), then check for meaningful differences
+      const isFirstSync =
+        transformRef.current.k === 1 &&
+        transformRef.current.x === 0 &&
+        transformRef.current.y === 0;
       const scaleDiff = Math.abs(scale - transformRef.current.k);
       const xDiff = Math.abs(x - transformRef.current.x);
       const yDiff = Math.abs(y - transformRef.current.y);
 
-      if (scaleDiff > 0.001 || xDiff > 0.1 || yDiff > 0.1) {
+      if (isFirstSync || scaleDiff > 0.001 || xDiff > 0.1 || yDiff > 0.1) {
+        console.log('[transform sync] updating transform:', {
+          scale,
+          x,
+          y,
+          isFirstSync,
+        });
         transformRef.current = { k: scale, x, y };
 
         // update the d3 transform state
@@ -579,7 +594,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
 
         // get the svg and root elements
         const svg = d3.select(svgRef.current);
-
         const root = svg.select('g.root');
 
         if (!root.empty()) {
@@ -592,6 +606,11 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
 
           // also re-apply styles that depend on scale
           adjustStylesForTransform(scale);
+
+          // redraw lines with new scale if projection is available
+          if (projectionRef.current) {
+            redrawAllLinesFromYjs(projectionRef.current);
+          }
         }
       }
     };
@@ -2060,15 +2079,9 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     const g = root.append('g');
     gRef.current = g.node();
 
-    // apply initial transform from yjs state or default
-    const initialScale = (yWorldMapState.get('zoomScale') as number) || 1;
-    const initialX = (yWorldMapState.get('panX') as number) || 0;
-    const initialY = (yWorldMapState.get('panY') as number) || 0;
-    transformRef.current = { k: initialScale, x: initialX, y: initialY };
-    g.attr(
-      'transform',
-      `translate(${initialX},${initialY}) scale(${initialScale})`
-    );
+    // don't apply initial transform here - let the sync effect handle it
+    // this prevents conflicts when joining after transforms have been made
+    transformRef.current = { k: 1, x: 0, y: 0 };
 
     // removed parent element listener
 
@@ -2095,6 +2108,21 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         allFlights.current = flightsData;
         allAirports.current = airportsData; // store all airport data
         puzzleDescription.current = puzzleData; // store puzzle description data
+
+        // trigger validation check for joining users with existing selections
+        if (ySelectedFlights) {
+          const selectedFlightIds = ySelectedFlights.toArray();
+          if (selectedFlightIds.length === 2) {
+            const selectedFlights = selectedFlightIds
+              .map((id) => allFlights.current.find((f) => f.id === id))
+              .filter(Boolean) as Flight[];
+
+            if (selectedFlights.length === 2) {
+              const result = validateSelectedFlights(selectedFlights);
+              setValidationResult(result);
+            }
+          }
+        }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const geoFeature = (topojson.feature as any)(
@@ -2144,7 +2172,7 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .append('rect')
           .attr('class', 'local-brush-rect')
           .attr('pointer-events', 'none')
-          .attr('fill', `${userColor}33`) // transparency
+          .attr('fill', 'rgba(232, 27, 35, 0.3)') // default to origins color
           .attr('stroke', userColor)
           .attr('stroke-width', 2)
           .attr('stroke-dasharray', '3,3')
@@ -2245,12 +2273,19 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           }
 
           // update the custom brush rectangle to exactly match remote brushes
+          const brushMode = hoverModeRef.current;
+          const brushFillColor =
+            brushMode === 'origin'
+              ? 'rgba(232, 27, 35, 0.3)' // red for origins
+              : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
+
           localBrushRect
             .attr('visibility', 'visible')
             .attr('x', x0)
             .attr('y', y0)
             .attr('width', x1 - x0)
-            .attr('height', y1 - y0);
+            .attr('height', y1 - y0)
+            .attr('fill', brushFillColor);
 
           // find airports within the brush selection
           // brush coordinates and airport coordinates are in same transformed space
@@ -2371,8 +2406,14 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .append('rect')
             .attr('class', 'remote-brush')
             .attr('pointer-events', 'none')
-            .attr('fill', (d) => `${d.state.user.color}33`) // add transparency
-            .attr('stroke', (d) => d.state.user.color)
+            .attr('fill', (d) => {
+              // use mode-based color for fill
+              const mode = d.state.brushSelection!.mode;
+              return mode === 'origin'
+                ? 'rgba(232, 27, 35, 0.3)' // red for origins
+                : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
+            })
+            .attr('stroke', (d) => d.state.user.color) // keep user color for stroke
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '3,3');
 
@@ -2388,7 +2429,14 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .attr(
               'height',
               (d) => d.state.brushSelection!.y1 - d.state.brushSelection!.y0
-            );
+            )
+            .attr('fill', (d) => {
+              // update fill color based on mode
+              const mode = d.state.brushSelection!.mode;
+              return mode === 'origin'
+                ? 'rgba(232, 27, 35, 0.3)' // red for origins
+                : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
+            });
         };
 
         const airportsGroup = g
@@ -2409,10 +2457,10 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             const coords = projection([d.Longitude, d.Latitude]);
             return coords ? coords[1] : 0;
           })
-          .attr('r', airportRadius / initialScale) // use initial scale
+          .attr('r', airportRadius / transformRef.current.k) // use current transform scale
           .attr('fill', airportFill)
           .attr('stroke', airportStroke)
-          .attr('stroke-width', airportStrokeWidth / initialScale) // use initial scale
+          .attr('stroke-width', airportStrokeWidth / transformRef.current.k) // use current transform scale
           .attr('class', 'airport')
           .attr('data-iata', (d) => d.IATA) // add iata for easy selection
           .style('cursor', 'none');
@@ -2488,8 +2536,21 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             }
           });
 
-        // initial application of styles based on yjs state
-        adjustStylesForTransform(initialScale);
+        // get initial transform from yjs state and apply it
+        const initialScale = (yWorldMapState.get('zoomScale') as number) || 1;
+        const initialX = (yWorldMapState.get('panX') as number) || 0;
+        const initialY = (yWorldMapState.get('panY') as number) || 0;
+
+        // update transformRef and apply transform
+        transformRef.current = { k: initialScale, x: initialX, y: initialY };
+        const initialTransform = d3.zoomIdentity
+          .translate(initialX, initialY)
+          .scale(initialScale);
+        setCurrentTransform(initialTransform);
+        root.attr('transform', initialTransform.toString());
+
+        // initial application of styles based on current transform
+        adjustStylesForTransform(transformRef.current.k);
         redrawAllLinesFromYjs(projection);
         updateInfoPanelFromYjs();
 
@@ -2569,12 +2630,9 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         // apply zoom behavior to svg
         svg.call(zoom);
 
-        // set initial transform from yjs state
-        const initialTransform = d3.zoomIdentity
-          .translate(initialX, initialY)
-          .scale(initialScale);
-        setCurrentTransform(initialTransform);
-        root.attr('transform', initialTransform.toString());
+        // set the zoom behavior's internal state to match the current transform
+        // this ensures new users sync properly to existing transforms
+        svg.property('__zoom', initialTransform);
 
         // cleanup function for awareness observer
         return () => {
@@ -2936,15 +2994,15 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       <div
         ref={modeIndicatorRef}
         style={{
-          position: 'fixed',
-          bottom: '20px',
-          left: '50%',
+          position: 'absolute',
+          bottom: '0px',
+          left: `${totalWidth / 2}px`,
           transform: 'translateX(-50%)',
           zIndex: 1001,
           background: 'rgba(232, 27, 35, 0.9)', // default to origins color
           color: 'white',
           padding: '12px 24px',
-          borderRadius: '25px',
+          borderRadius: '8px',
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
           backdropFilter: 'blur(8px)',
           border: '1px solid rgba(255, 255, 255, 0.2)',
