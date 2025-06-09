@@ -2074,10 +2074,10 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
 
     Promise.all([
       d3.json<WorldTopology>('/src/assets/traveldata/world110.topo.json'),
-      d3.json<Airport[]>('/src/assets/situation2/airports.json'),
-      d3.json<Flight[]>('/src/assets/situation2/flights.json'),
+      d3.json<Airport[]>('/src/assets/situation3/airports.json'),
+      d3.json<Flight[]>('/src/assets/situation3/flights.json'),
       d3.json<PuzzleDescription>(
-        '/src/assets/situation2/puzzle_description.json'
+        '/src/assets/situation3/puzzle_description.json'
       ),
     ])
       .then(([topology, airportsData, flightsData, puzzleData]) => {
