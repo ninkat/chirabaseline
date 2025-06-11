@@ -356,9 +356,40 @@ const externalLabelAdjustments: Record<string, [number, number]> = {
   MARYLAND: [0, 0], // no adjustment from base position
 };
 
+// awareness states interface
+interface AwarenessState {
+  user: {
+    name: string;
+    color: string;
+    id: string;
+  };
+  cursor: {
+    x: number;
+    y: number;
+    stateName?: string;
+  };
+  brushSelection?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    mode: 'origin' | 'destination';
+  };
+  timestamp?: number;
+}
+
+// cursor data interface
+interface CursorData {
+  state: AwarenessState;
+  clientId: number;
+  isLocal: boolean;
+}
+
 const DoMi: React.FC = () => {
   const svgRef = useRef<SVGSVGElement>(null);
   const panelSvgRef = useRef<SVGSVGElement>(null); // ref for the info panel svg
+  const gRef = useRef<SVGGElement | null>(null);
+  const cursorOverlayRef = useRef<HTMLDivElement>(null);
   const migrationDataByEra = useRef<Record<Era, Migration[]>>({
     '1960s': [],
     '1990s': [],
@@ -388,8 +419,7 @@ const DoMi: React.FC = () => {
   const currentViewTypeRef = useRef<ViewType>('absolute');
   const calculateAndStoreMigrationsRef = useRef<(() => void) | null>(null);
 
-  const yjsContext = useContext(YjsContext);
-  const doc = yjsContext?.doc;
+  const { doc, awareness } = useContext(YjsContext) ?? {};
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
   const [migrationDataLoaded, setMigrationDataLoaded] = useState(false);
 
@@ -397,6 +427,12 @@ const DoMi: React.FC = () => {
   const yHoveredRightStates = doc?.getArray<string>('usTileHoveredRightStates');
   const yPinnedLeftStates = doc?.getArray<string>('usTilePinnedLeftStates');
   const yPinnedRightStates = doc?.getArray<string>('usTilePinnedRightStates');
+  const yClientBrushSelectionsLeft = doc?.getMap<string[]>(
+    'usTileClientBrushSelectionsLeft'
+  );
+  const yClientBrushSelectionsRight = doc?.getMap<string[]>(
+    'usTileClientBrushSelectionsRight'
+  );
   const yActiveMigrationLinks = doc?.getArray<Y.Map<unknown>>(
     'usTileActiveMigrationLinks'
   );
@@ -407,8 +443,43 @@ const DoMi: React.FC = () => {
     'usTileSharedState'
   );
 
+  const [userId] = useState<string>(() => crypto.randomUUID());
+  const [userName] = useState<string>(
+    () => `User-${Math.floor(Math.random() * 1000)}`
+  );
+  const [userColor] = useState<string>(() => {
+    const colors = [
+      '#9b59b6', // purple
+      '#f39c12', // orange
+      '#16a085', // teal
+      '#ff69b4', // hot pink
+      '#2ecc71', // vibrant green
+      '#ffcc00', // golden yellow
+      '#00bcd4', // cyan
+      '#8e44ad', // deeper purple
+      '#ff8c00', // dark orange
+      '#1abc9c', // aqua green
+    ];
+    return colors[Math.floor(Math.random() * colors.length)];
+  });
+
+  const hoverModeRef = useRef<'origin' | 'destination'>('origin');
+  const modeIndicatorRef = useRef<HTMLDivElement | null>(null);
+
   const width = totalWidth;
   const height = totalHeight;
+
+  const updateModeIndicator = () => {
+    if (modeIndicatorRef.current) {
+      const isOriginMode = hoverModeRef.current === 'origin';
+      modeIndicatorRef.current.textContent = isOriginMode
+        ? 'Origins'
+        : 'Destinations';
+      modeIndicatorRef.current.style.background = isOriginMode
+        ? 'rgba(232, 27, 35, 0.9)'
+        : 'rgba(0, 174, 243, 0.9)';
+    }
+  };
 
   useEffect(() => {
     if (!doc) return;
@@ -417,6 +488,73 @@ const DoMi: React.FC = () => {
     }, 1500);
     return () => clearTimeout(timeout);
   }, [doc]);
+
+  useEffect(() => {
+    if (!awareness) return;
+
+    awareness.setLocalState({
+      user: { name: userName, color: userColor, id: userId },
+      cursor: { x: 0, y: 0 },
+    } as AwarenessState);
+
+    return () => {
+      awareness.setLocalState(null);
+    };
+  }, [awareness, userId, userName, userColor]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.metaKey || event.altKey || event.shiftKey)
+        return;
+
+      if (event.code === 'ControlLeft' || event.code === 'ControlRight') {
+        const currentMode = hoverModeRef.current;
+        const currentHoverArray =
+          currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
+        const targetHoverArray =
+          currentMode === 'origin' ? yHoveredRightStates : yHoveredLeftStates;
+        const targetPinnedArray =
+          currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
+
+        if (currentHoverArray && targetHoverArray && targetPinnedArray) {
+          const currentHovered = currentHoverArray.toArray();
+          const targetPinned = targetPinnedArray.toArray();
+
+          if (currentHovered.length > 0) {
+            currentHoverArray.delete(0, currentHoverArray.length);
+          }
+
+          if (currentHovered.length > 0) {
+            const transferable = currentHovered.filter(
+              (state) => !targetPinned.includes(state)
+            );
+            if (transferable.length > 0) {
+              if (targetHoverArray.length > 0) {
+                targetHoverArray.delete(0, targetHoverArray.length);
+              }
+              targetHoverArray.push(transferable);
+            }
+          }
+        }
+
+        hoverModeRef.current =
+          hoverModeRef.current === 'origin' ? 'destination' : 'origin';
+        updateModeIndicator();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    updateModeIndicator();
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    yHoveredLeftStates,
+    yHoveredRightStates,
+    yPinnedLeftStates,
+    yPinnedRightStates,
+  ]);
 
   // removed transform synchronization for non-gesture version
 
@@ -570,7 +708,7 @@ const DoMi: React.FC = () => {
                 )
             );
 
-        // sort by migration value and take only the top 300 flows
+        // sort by migration value and take only the top 100 flows
         const currentMigrationData = allMigrationData
           .sort((a, b) => b.value - a.value)
           .slice(0, 100);
@@ -1113,6 +1251,8 @@ const DoMi: React.FC = () => {
       !yPinnedRightStates ||
       !yActiveMigrationLinks ||
       !yTotalMigrationValue ||
+      !yClientBrushSelectionsLeft ||
+      !yClientBrushSelectionsRight ||
       getCurrentMigrationData(currentEraRef.current, currentViewTypeRef.current)
         .length === 0
     )
@@ -1124,14 +1264,26 @@ const DoMi: React.FC = () => {
       const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
       const currentRightPinned = yPinnedRightStates?.toArray() || [];
 
+      const allBrushLeftStates: string[] = [];
+      yClientBrushSelectionsLeft?.forEach((states) => {
+        allBrushLeftStates.push(...states);
+      });
+
+      const allBrushRightStates: string[] = [];
+      yClientBrushSelectionsRight?.forEach((states) => {
+        allBrushRightStates.push(...states);
+      });
+
       // combine hovered and pinned states
       const originStates = new Set<string>([
         ...currentLeftHovered,
         ...currentLeftPinned,
+        ...allBrushLeftStates,
       ]);
       const destStates = new Set<string>([
         ...currentRightHovered,
         ...currentRightPinned,
+        ...allBrushRightStates,
       ]);
 
       doc.transact(() => {
@@ -1371,6 +1523,8 @@ const DoMi: React.FC = () => {
     yHoveredRightStates.observeDeep(calculateAndStoreMigrations);
     yPinnedLeftStates.observeDeep(calculateAndStoreMigrations);
     yPinnedRightStates.observeDeep(calculateAndStoreMigrations);
+    yClientBrushSelectionsLeft.observeDeep(calculateAndStoreMigrations);
+    yClientBrushSelectionsRight.observeDeep(calculateAndStoreMigrations);
     calculateAndStoreMigrations();
 
     return () => {
@@ -1378,6 +1532,8 @@ const DoMi: React.FC = () => {
       yHoveredRightStates.unobserveDeep(calculateAndStoreMigrations);
       yPinnedLeftStates.unobserveDeep(calculateAndStoreMigrations);
       yPinnedRightStates.unobserveDeep(calculateAndStoreMigrations);
+      yClientBrushSelectionsLeft.unobserveDeep(calculateAndStoreMigrations);
+      yClientBrushSelectionsRight.unobserveDeep(calculateAndStoreMigrations);
     };
   }, [
     doc,
@@ -1389,6 +1545,8 @@ const DoMi: React.FC = () => {
     yActiveMigrationLinks,
     yTotalMigrationValue,
     migrationDataLoaded,
+    yClientBrushSelectionsLeft,
+    yClientBrushSelectionsRight,
   ]);
 
   // function to update the info panel with migration data
@@ -1646,6 +1804,15 @@ const DoMi: React.FC = () => {
         (ymap) => ymap.toJSON() as MigrationLinkInfo
       ) || [];
 
+    const allBrushLeftStates: string[] = [];
+    yClientBrushSelectionsLeft?.forEach((states) => {
+      allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
+    });
+    const allBrushRightStates: string[] = [];
+    yClientBrushSelectionsRight?.forEach((states) => {
+      allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
+    });
+
     // performance optimization: use css classes instead of individual attribute updates
     d3.select(svgRef.current)
       .select('g#map-group')
@@ -1666,9 +1833,104 @@ const DoMi: React.FC = () => {
           ? currentRightPinned.includes(stateName)
           : false;
 
+        const isLeftBrush = stateName
+          ? allBrushLeftStates.includes(stateName)
+          : false;
+        const isRightBrush = stateName
+          ? allBrushRightStates.includes(stateName)
+          : false;
+
         // treat pinned states as permanently hovered for fill color
-        const effectiveLeftHover = isLeftHover || isLeftPinned;
-        const effectiveRightHover = isRightHover || isRightPinned;
+        const effectiveLeftHover = isLeftHover || isLeftPinned || isLeftBrush;
+        const effectiveRightHover =
+          isRightHover || isRightPinned || isRightBrush;
+
+        // apply css classes for performance - much faster than individual attribute updates
+        const element = d3.select(tileElement);
+
+        // remove all state classes first
+        element
+          .classed('state-hover-left', false)
+          .classed('state-hover-right', false)
+          .classed('state-pinned', false);
+
+        // apply appropriate classes based on state
+        if (effectiveLeftHover && effectiveRightHover) {
+          // left takes precedence when both are hovered
+          element.classed('state-hover-left', true);
+        } else if (effectiveLeftHover) {
+          element.classed('state-hover-left', true);
+        } else if (effectiveRightHover) {
+          element.classed('state-hover-right', true);
+        }
+
+        // pinned styling overrides hover styling for stroke
+        if (isLeftPinned || isRightPinned) {
+          element.classed('state-pinned', true);
+        }
+      });
+
+    // use bundled line highlighting instead of creating new migration lines
+    highlightBundledLines(currentActiveLinks);
+
+    // clear any old migration lines (they're now replaced by bundled lines)
+    clearAllD3MigrationLines();
+
+    // update info panel
+    updateInfoPanel();
+  };
+
+  // render visuals with current brush selection for immediate feedback
+  const renderVisualsWithCurrentBrush = (currentBrushStates: {
+    left: string[];
+    right: string[];
+  }) => {
+    if (!doc || !svgRef.current || !isInitializedRef.current) return;
+
+    const currentLeftHovered = yHoveredLeftStates?.toArray() || [];
+    const currentRightHovered = yHoveredRightStates?.toArray() || [];
+    const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
+    const currentRightPinned = yPinnedRightStates?.toArray() || [];
+    const currentActiveLinks =
+      yActiveMigrationLinks?.map(
+        (ymap) => ymap.toJSON() as MigrationLinkInfo
+      ) || [];
+
+    // use provided brush states instead of yjs arrays
+    const allBrushLeftStates = currentBrushStates.left;
+    const allBrushRightStates = currentBrushStates.right;
+
+    // performance optimization: use css classes instead of individual attribute updates
+    d3.select(svgRef.current)
+      .select('g#map-group')
+      .selectAll('path.tile')
+      .each(function () {
+        const tileElement = this as SVGPathElement;
+        const stateName = d3.select(tileElement).attr('data-statename');
+        const isLeftHover = stateName
+          ? currentLeftHovered.includes(stateName)
+          : false;
+        const isRightHover = stateName
+          ? currentRightHovered.includes(stateName)
+          : false;
+        const isLeftPinned = stateName
+          ? currentLeftPinned.includes(stateName)
+          : false;
+        const isRightPinned = stateName
+          ? currentRightPinned.includes(stateName)
+          : false;
+
+        const isLeftBrush = stateName
+          ? allBrushLeftStates.includes(stateName.toUpperCase())
+          : false;
+        const isRightBrush = stateName
+          ? allBrushRightStates.includes(stateName.toUpperCase())
+          : false;
+
+        // treat pinned states as permanently hovered for fill color
+        const effectiveLeftHover = isLeftHover || isLeftPinned || isLeftBrush;
+        const effectiveRightHover =
+          isRightHover || isRightPinned || isRightBrush;
 
         // apply css classes for performance - much faster than individual attribute updates
         const element = d3.select(tileElement);
@@ -1716,6 +1978,7 @@ const DoMi: React.FC = () => {
       .append('g')
       .attr('id', 'map-group')
       .attr('transform', `translate(${mapLeftOffset}, ${-totalHeight * 0.1})`);
+    gRef.current = mapGroup.node();
 
     // initialize panel SVG structure
     if (panelSvgRef.current) {
@@ -1797,7 +2060,204 @@ const DoMi: React.FC = () => {
       // add performance styles to document head
       addPerformanceStyles();
 
+      // create map features group first (background, non-interactive)
+      const mapFeaturesGroup = mapGroup
+        .append('g')
+        .attr('class', 'map-features')
+        .style('pointer-events', 'none');
+
+      mapFeaturesGroup
+        .selectAll('path')
+        .data(filteredFeatures)
+        .join('path')
+        .attr('d', pathGenerator)
+        .attr('class', 'tile')
+        .attr(
+          'data-statename',
+          (d) =>
+            (d.properties as StateGeometry['properties'])?.name || 'unknown'
+        );
+      // css classes handle styling now for better performance
+
+      // create brush group for multi-selection (before interactive elements)
+      const brushGroup = mapGroup.append('g').attr('class', 'brush');
       mapGroup
+        .append('g')
+        .attr('class', 'remote-brushes')
+        .style('pointer-events', 'none');
+
+      const localBrushRect = brushGroup
+        .append('rect')
+        .attr('class', 'local-brush-rect')
+        .attr('pointer-events', 'none')
+        .attr('fill', 'rgba(232, 27, 35, 0.3)')
+        .attr('stroke', userColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3')
+        .attr('visibility', 'hidden');
+
+      const brush = d3
+        .brush()
+        .on('start', brushStarted)
+        .on('brush', brushed)
+        .on('end', brushEnded);
+
+      brushGroup.call(brush);
+
+      function brushStarted() {
+        const currentMode = hoverModeRef.current;
+        const targetMap =
+          currentMode === 'origin'
+            ? yClientBrushSelectionsLeft
+            : yClientBrushSelectionsRight;
+        if (targetMap && userId) {
+          targetMap.set(userId, []);
+        }
+      }
+
+      function brushed(event: d3.D3BrushEvent<unknown>) {
+        if (!event.selection) {
+          localBrushRect.attr('visibility', 'hidden');
+          const currentMode = hoverModeRef.current;
+          const targetMap =
+            currentMode === 'origin'
+              ? yClientBrushSelectionsLeft
+              : yClientBrushSelectionsRight;
+          if (targetMap && userId) {
+            targetMap.set(userId, []);
+          }
+          return;
+        }
+
+        const [[x0, y0], [x1, y1]] = event.selection as [
+          [number, number],
+          [number, number]
+        ];
+
+        if (awareness && event.sourceEvent) {
+          const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
+          const currentState = awareness.getLocalState() as AwarenessState;
+          if (currentState) {
+            awareness.setLocalState({
+              ...currentState,
+              cursor: { x: svgX, y: svgY },
+              brushSelection: {
+                x0,
+                y0,
+                x1,
+                y1,
+                mode: hoverModeRef.current,
+              },
+            });
+          }
+        }
+
+        const brushMode = hoverModeRef.current;
+        const brushFillColor =
+          brushMode === 'origin'
+            ? 'rgba(232, 27, 35, 0.3)'
+            : 'rgba(0, 174, 243, 0.3)';
+
+        localBrushRect
+          .attr('visibility', 'visible')
+          .attr('x', x0)
+          .attr('y', y0)
+          .attr('width', x1 - x0)
+          .attr('height', y1 - y0)
+          .attr('fill', brushFillColor);
+
+        const selectedStates = filteredFeatures.filter((feature) => {
+          // get the bounding box of the state's geometry
+          const bounds = pathGenerator.bounds(feature);
+          if (!bounds || bounds.length !== 2) return false;
+
+          const [[stateX0, stateY0], [stateX1, stateY1]] = bounds;
+
+          // check if brush rectangle intersects with state bounding box
+          // rectangles intersect if they don't completely miss each other
+          const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
+          const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
+
+          return !(brushMissesStateHorizontally || brushMissesStateVertically);
+        });
+
+        const selectedStateNames = selectedStates
+          .map((f) => f.properties?.name)
+          .filter(Boolean) as string[];
+
+        const currentMode = hoverModeRef.current;
+        const targetMap =
+          currentMode === 'origin'
+            ? yClientBrushSelectionsLeft
+            : yClientBrushSelectionsRight;
+        const oppositePinnedArray =
+          currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
+
+        const oppositePinned = oppositePinnedArray?.toArray() || [];
+        const validSelections = selectedStateNames.filter(
+          (name) => !oppositePinned.includes(name.toUpperCase())
+        );
+
+        if (targetMap && userId) {
+          targetMap.set(
+            userId,
+            validSelections.map((s) => s.toUpperCase())
+          );
+        }
+
+        // trigger visual update during brushing for immediate feedback with current selection
+        const activeBrushMode = hoverModeRef.current;
+        const currentBrushStates = {
+          left:
+            activeBrushMode === 'origin'
+              ? validSelections.map((s) => s.toUpperCase())
+              : [],
+          right:
+            activeBrushMode === 'destination'
+              ? validSelections.map((s) => s.toUpperCase())
+              : [],
+        };
+        renderVisualsWithCurrentBrush(currentBrushStates);
+      }
+
+      function brushEnded(event: d3.D3BrushEvent<unknown>) {
+        localBrushRect.attr('visibility', 'hidden');
+
+        const currentMode = hoverModeRef.current;
+        const targetMap =
+          currentMode === 'origin'
+            ? yClientBrushSelectionsLeft
+            : yClientBrushSelectionsRight;
+
+        if (targetMap && userId) {
+          targetMap.set(userId, []);
+        }
+
+        if (awareness && event.sourceEvent) {
+          const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
+          const currentState = awareness.getLocalState() as AwarenessState;
+          if (currentState) {
+            const stateWithoutBrush = {
+              ...currentState,
+              cursor: { x: svgX, y: svgY },
+            };
+            if ('brushSelection' in stateWithoutBrush) {
+              delete (stateWithoutBrush as Partial<AwarenessState>)
+                .brushSelection;
+            }
+            awareness.setLocalState(stateWithoutBrush);
+          }
+          brushGroup.call(brush.move, null);
+        }
+      }
+
+      // create interactive states group AFTER brush (on top with pointer-events)
+      const statesGroup = mapGroup
+        .append('g')
+        .attr('class', 'interactive-states')
+        .style('pointer-events', 'all');
+
+      const stateTiles = statesGroup
         .selectAll('path.tile')
         .data(filteredFeatures)
         .join('path')
@@ -1807,8 +2267,80 @@ const DoMi: React.FC = () => {
           (d) =>
             (d.properties as StateGeometry['properties'])?.name || 'unknown'
         )
-        .attr('d', pathGenerator);
+        .attr('d', pathGenerator)
+        .style('cursor', 'pointer');
       // css classes handle styling now for better performance
+
+      // add hover event handlers to state tiles
+      stateTiles
+        .on('mouseenter', function (_, d) {
+          const feature = d as Feature<Geometry, GeoJsonProperties>;
+          const stateName = (feature.properties as StateGeometry['properties'])
+            ?.name;
+          if (!stateName) return;
+
+          const currentMode = hoverModeRef.current;
+          const targetArray =
+            currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
+          const oppositePinnedArray =
+            currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
+
+          if (targetArray && oppositePinnedArray) {
+            const oppositePinned = oppositePinnedArray.toArray();
+            if (!oppositePinned.includes(stateName)) {
+              if (targetArray.length > 0) {
+                targetArray.delete(0, targetArray.length);
+              }
+              targetArray.push([stateName]);
+            }
+          }
+        })
+        .on('mouseleave', function () {
+          const currentMode = hoverModeRef.current;
+          const targetArray =
+            currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
+
+          if (targetArray && targetArray.length > 0) {
+            targetArray.delete(0, targetArray.length);
+          }
+        })
+        .on('click', function (event, d) {
+          event.stopPropagation();
+          const feature = d as Feature<Geometry, GeoJsonProperties>;
+          const stateName = (feature.properties as StateGeometry['properties'])
+            ?.name;
+          if (!stateName) return;
+
+          // clear any hover state for immediate visual feedback
+          const currentMode = hoverModeRef.current;
+          const currentHoverArray =
+            currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
+
+          if (currentHoverArray && currentHoverArray.length > 0) {
+            currentHoverArray.delete(0, currentHoverArray.length);
+          }
+
+          const targetArray =
+            currentMode === 'origin' ? yPinnedLeftStates : yPinnedRightStates;
+          const oppositeArray =
+            currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
+
+          if (targetArray && oppositeArray) {
+            const currentPinned = targetArray.toArray();
+            const oppositePinned = oppositeArray.toArray();
+
+            if (currentPinned.includes(stateName)) {
+              const index = currentPinned.indexOf(stateName);
+              targetArray.delete(index, 1);
+            } else {
+              if (oppositePinned.includes(stateName)) {
+                const oppositeIndex = oppositePinned.indexOf(stateName);
+                oppositeArray.delete(oppositeIndex, 1);
+              }
+              targetArray.push([stateName]);
+            }
+          }
+        });
 
       // filter features for internal vs external labels
       const featuresWithInternalLabels = filteredFeatures.filter((feature) => {
@@ -1943,6 +2475,172 @@ const DoMi: React.FC = () => {
     yHoveredRightStates?.observeDeep(visualObserver);
     yActiveMigrationLinks?.observeDeep(visualObserver);
     yTotalMigrationValue?.observe(visualObserver);
+    yClientBrushSelectionsLeft?.observeDeep(visualObserver);
+    yClientBrushSelectionsRight?.observeDeep(visualObserver);
+
+    const updateCursors = () => {
+      if (!awareness || !cursorOverlayRef.current) return;
+
+      const cursorStates = Array.from(awareness.getStates().entries())
+        .map(([clientId, state]) => ({
+          clientId,
+          state: state as AwarenessState,
+          isLocal:
+            state &&
+            (state as AwarenessState).user &&
+            (state as AwarenessState).user.id === userId,
+        }))
+        .filter(
+          (item) => item.state && item.state.cursor && item.state.user
+        ) as CursorData[];
+
+      const overlay = d3.select(cursorOverlayRef.current);
+      overlay.selectAll('*').remove();
+
+      cursorStates.forEach((cursorData) => {
+        if (!cursorOverlayRef.current) return;
+
+        const cursorDiv = document.createElement('div');
+        cursorDiv.style.position = 'absolute';
+        cursorDiv.style.left = `${cursorData.state.cursor.x}px`;
+        cursorDiv.style.top = `${cursorData.state.cursor.y}px`;
+        cursorDiv.style.pointerEvents = 'none';
+        cursorDiv.style.zIndex = '9999';
+        cursorDiv.className = cursorData.isLocal
+          ? 'local-cursor'
+          : 'remote-cursor';
+
+        const cursorSvg = document.createElementNS(
+          'http://www.w3.org/2000/svg',
+          'svg'
+        );
+        cursorSvg.setAttribute('width', '24');
+        cursorSvg.setAttribute('height', '24');
+        cursorSvg.style.overflow = 'visible';
+
+        const cursorPath = document.createElementNS(
+          'http://www.w3.org/2000/svg',
+          'path'
+        );
+        cursorPath.setAttribute('d', 'M0,0 L24,12 L12,12 L12,24 L0,0');
+        cursorPath.setAttribute('fill', cursorData.state.user.color);
+        cursorPath.setAttribute('stroke', '#000');
+        cursorPath.setAttribute('stroke-width', '2');
+        cursorSvg.appendChild(cursorPath);
+
+        cursorDiv.appendChild(cursorSvg);
+
+        if (!cursorData.isLocal) {
+          const labelDiv = document.createElement('div');
+          labelDiv.style.position = 'absolute';
+          labelDiv.style.left = '23px';
+          labelDiv.style.top = '18px';
+          labelDiv.style.background = cursorData.state.user.color;
+          labelDiv.style.color = '#ffffff';
+          labelDiv.style.padding = '4px 8px';
+          labelDiv.style.borderRadius = '4px';
+          labelDiv.style.fontSize = '14px';
+          labelDiv.style.fontWeight = '500';
+          labelDiv.style.fontFamily = 'system-ui, sans-serif';
+          labelDiv.style.whiteSpace = 'nowrap';
+          labelDiv.textContent = cursorData.state.user.name;
+          cursorDiv.appendChild(labelDiv);
+        }
+
+        cursorOverlayRef.current.appendChild(cursorDiv);
+      });
+    };
+
+    const updateRemoteBrushes = () => {
+      if (!awareness) return;
+
+      const brushStates = Array.from(awareness.getStates().entries())
+        .map(([clientId, state]) => ({
+          clientId,
+          state: state as AwarenessState,
+          isLocal:
+            state &&
+            (state as AwarenessState).user &&
+            (state as AwarenessState).user.id === userId,
+        }))
+        .filter(
+          (item) =>
+            item.state &&
+            item.state.brushSelection &&
+            item.state.user &&
+            !item.isLocal
+        );
+
+      const remoteBrushesGroup = d3
+        .select(gRef.current)
+        .select('g.remote-brushes');
+
+      const brushes = remoteBrushesGroup
+        .selectAll<
+          SVGRectElement,
+          { clientId: number; state: AwarenessState; isLocal: boolean }
+        >('rect.remote-brush')
+        .data(brushStates, (d) => d.clientId.toString());
+
+      brushes.exit().remove();
+
+      const newBrushes = brushes
+        .enter()
+        .append('rect')
+        .attr('class', 'remote-brush')
+        .attr('pointer-events', 'none')
+        .attr('fill', (d) => {
+          const mode = d.state.brushSelection!.mode;
+          return mode === 'origin'
+            ? 'rgba(232, 27, 35, 0.3)'
+            : 'rgba(0, 174, 243, 0.3)';
+        })
+        .attr('stroke', (d) => d.state.user.color)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3');
+
+      newBrushes
+        .merge(brushes)
+        .attr('x', (d) => d.state.brushSelection!.x0)
+        .attr('y', (d) => d.state.brushSelection!.y0)
+        .attr(
+          'width',
+          (d) => d.state.brushSelection!.x1 - d.state.brushSelection!.x0
+        )
+        .attr(
+          'height',
+          (d) => d.state.brushSelection!.y1 - d.state.brushSelection!.y0
+        )
+        .attr('fill', (d) => {
+          const mode = d.state.brushSelection!.mode;
+          return mode === 'origin'
+            ? 'rgba(232, 27, 35, 0.3)'
+            : 'rgba(0, 174, 243, 0.3)';
+        });
+    };
+
+    const awarenessObserver = () => {
+      updateCursors();
+      updateRemoteBrushes();
+    };
+    if (awareness) {
+      awareness.on('change', awarenessObserver);
+    }
+    updateCursors();
+    updateRemoteBrushes();
+
+    svg.on('mousemove', function (event) {
+      if (!awareness) return;
+
+      const [containerX, containerY] = d3.pointer(event, svgRef.current!);
+      const currentState = awareness.getLocalState() as AwarenessState;
+      if (currentState) {
+        awareness.setLocalState({
+          ...currentState,
+          cursor: { x: containerX, y: containerY },
+        });
+      }
+    });
 
     doc.transact(() => {
       if (yTotalMigrationValue && !yTotalMigrationValue.has('value')) {
@@ -1961,6 +2659,11 @@ const DoMi: React.FC = () => {
       yHoveredRightStates?.unobserveDeep(visualObserver);
       yActiveMigrationLinks?.unobserveDeep(visualObserver);
       yTotalMigrationValue?.unobserve(visualObserver);
+      yClientBrushSelectionsLeft?.unobserveDeep(visualObserver);
+      yClientBrushSelectionsRight?.unobserveDeep(visualObserver);
+      if (awareness) {
+        awareness.off('change', awarenessObserver);
+      }
       clearAllD3MigrationLines();
 
       // clean up all gradients when component unmounts to prevent memory leaks
@@ -1983,6 +2686,10 @@ const DoMi: React.FC = () => {
     yActiveMigrationLinks,
     yTotalMigrationValue,
     migrationDataLoaded,
+    yClientBrushSelectionsLeft,
+    yClientBrushSelectionsRight,
+    awareness,
+    userId,
   ]);
 
   // re-render when yjs shared state changes
@@ -2129,6 +2836,7 @@ const DoMi: React.FC = () => {
           border: '2px solid black',
           overflow: 'hidden',
           backgroundColor: 'white',
+          cursor: 'none',
         }}
       >
         {/* d3 map will be appended here by effects */}
@@ -2155,6 +2863,44 @@ const DoMi: React.FC = () => {
           {/* Panel content will be added here by D3 */}
         </g>
       </svg>
+      <div
+        ref={cursorOverlayRef}
+        style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: totalWidth,
+          height: totalHeight,
+          pointerEvents: 'none',
+          zIndex: 10000,
+        }}
+      />
+      <div
+        ref={modeIndicatorRef}
+        style={{
+          position: 'fixed',
+          bottom: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 1001,
+          background: 'rgba(232, 27, 35, 0.9)',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid rgba(255, 255, 255, 0.2)',
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '16px',
+          fontWeight: '600',
+          textAlign: 'center',
+          userSelect: 'none',
+          transition: 'background 0.2s ease',
+        }}
+      >
+        Origins
+      </div>
     </>
   );
 };
