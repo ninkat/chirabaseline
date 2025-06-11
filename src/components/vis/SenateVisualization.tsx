@@ -277,7 +277,7 @@ const SenateVisualization: React.FC = () => {
     // periodic document compaction to prevent unbounded growth
     const compactionInterval = setInterval(() => {
       pruneYDoc(doc);
-    }, 300000); // every 5 minutes
+    }, 60000); // every 5 minutes
 
     // cleanup intervals on unmount
     return () => {

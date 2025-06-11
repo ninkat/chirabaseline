@@ -89,7 +89,7 @@ const styles = {
 // main display component with collapsible sidebar
 const Display: React.FC = () => {
   const [currentVisualization, setCurrentVisualization] =
-    useState<VisualizationType>('travel');
+    useState<VisualizationType>('domi');
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   // handle visualization change
