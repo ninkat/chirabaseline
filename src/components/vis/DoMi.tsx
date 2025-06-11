@@ -980,52 +980,21 @@ const DoMi: React.FC = () => {
         currentViewTypeRef.current
       ];
 
-    // calculate global min/max values including both bundled paths AND active links for proper scaling
+    // calculate min/max values ONLY from bundled paths for consistent stroke width scaling
     const bundledValues = Array.from(currentEraBundledPaths.values()).map(
       (data) => data.value
     );
-    const activeLinkValues = activeMigrationLinks.map((link) => link.value);
-    const allScalingValues = [...bundledValues, ...activeLinkValues];
 
-    const globalMaxValue = Math.max(...allScalingValues);
-    const globalMinValue = Math.min(...allScalingValues);
+    const bundledMaxValue = Math.max(...bundledValues);
+    const bundledMinValue = Math.min(...bundledValues);
     const minStrokeWidth = 2;
     const maxStrokeWidth = 12;
 
-    // performance optimization: use css classes for line state changes
+    // reset all bundled lines to their original appearance without recalculating stroke widths
     bundledLinesGroup
       .selectAll('path.bundled-migration-line')
-      .each(function () {
-        const element = d3.select(this);
-        const value = Number(element.attr('data-value'));
-        const originalGradientId = element.attr('data-gradient-id');
-
-        // recalculate linear stroke width for reset using global values with proper bounds
-        let strokeWidth: number;
-        let normalizedValue: number;
-        if (globalMaxValue === globalMinValue) {
-          strokeWidth = maxStrokeWidth;
-          normalizedValue = 1;
-        } else {
-          normalizedValue = Math.max(
-            0,
-            Math.min(
-              1,
-              (value - globalMinValue) / (globalMaxValue - globalMinValue)
-            )
-          );
-          strokeWidth =
-            minStrokeWidth +
-            normalizedValue * (maxStrokeWidth - minStrokeWidth);
-        }
-
-        // use css classes for performance - remove dimming class
-        element
-          .classed('line-dimmed', false)
-          .attr('stroke', `url(#${originalGradientId})`)
-          .attr('stroke-width', strokeWidth)
-          .style('filter', 'none');
-      });
+      .classed('line-dimmed', false)
+      .style('filter', 'none');
 
     // highlight the active migration links by creating thick, high-opacity gradient lines in the foreground group
     const top5Links = activeMigrationLinks.slice(0, 5);
@@ -1044,10 +1013,10 @@ const DoMi: React.FC = () => {
       top5Links.forEach((link) => {
         const pairKey = getPairKey(link.origin, link.destination);
 
-        // calculate much thicker highlighted line width
+        // calculate much thicker highlighted line width using bundled values scaling
         let highlightedWidth: number;
         let normalizedValue: number;
-        if (globalMaxValue === globalMinValue) {
+        if (bundledMaxValue === bundledMinValue) {
           highlightedWidth = maxStrokeWidth;
           normalizedValue = 1;
         } else {
@@ -1055,7 +1024,8 @@ const DoMi: React.FC = () => {
             0,
             Math.min(
               1,
-              (link.value - globalMinValue) / (globalMaxValue - globalMinValue)
+              (link.value - bundledMinValue) /
+                (bundledMaxValue - bundledMinValue)
             )
           );
           highlightedWidth =
@@ -1191,17 +1161,17 @@ const DoMi: React.FC = () => {
             ]);
 
             if (straightLinePath) {
-              // calculate what the background line width would be for this value
+              // calculate what the background line width would be for this value using bundled values scaling
               let backgroundEquivalentWidth: number;
-              if (globalMaxValue === globalMinValue) {
+              if (bundledMaxValue === bundledMinValue) {
                 backgroundEquivalentWidth = maxStrokeWidth;
               } else {
                 const normalizedValue = Math.max(
                   0,
                   Math.min(
                     1,
-                    (link.value - globalMinValue) /
-                      (globalMaxValue - globalMinValue)
+                    (link.value - bundledMinValue) /
+                      (bundledMaxValue - bundledMinValue)
                   )
                 );
                 backgroundEquivalentWidth =
@@ -1595,7 +1565,8 @@ const DoMi: React.FC = () => {
     const buttonContainer = panelContentGroup
       .append('g')
       .attr('class', 'd3-button-container')
-      .attr('transform', `translate(${padding}, ${buttonContainerY})`);
+      .attr('transform', `translate(${padding}, ${buttonContainerY})`)
+      .style('pointer-events', 'all');
 
     buttonContainerRef.current = buttonContainer.node();
 
@@ -1642,6 +1613,17 @@ const DoMi: React.FC = () => {
         )
         .style('pointer-events', 'none')
         .text(era);
+
+      // add click handler for era buttons
+      buttonGroup.on('click', () => {
+        if (era !== currentEraRef.current && ySharedState) {
+          ySharedState.set('currentEra', era);
+          // recalculate migrations for the new era
+          if (calculateAndStoreMigrationsRef.current) {
+            calculateAndStoreMigrationsRef.current();
+          }
+        }
+      });
     });
 
     // view type buttons section
@@ -1649,7 +1631,8 @@ const DoMi: React.FC = () => {
     const viewTypeButtonContainer = panelContentGroup
       .append('g')
       .attr('class', 'd3-view-type-button-container')
-      .attr('transform', `translate(${padding}, ${viewTypeButtonY})`);
+      .attr('transform', `translate(${padding}, ${viewTypeButtonY})`)
+      .style('pointer-events', 'all');
 
     const viewTypes: ViewType[] = ['absolute', 'rate'];
     const viewTypeButtonWidth =
@@ -1697,6 +1680,17 @@ const DoMi: React.FC = () => {
         )
         .style('pointer-events', 'none')
         .text(viewType === 'absolute' ? 'absolute' : 'per 100K');
+
+      // add click handler for view type buttons
+      buttonGroup.on('click', () => {
+        if (viewType !== currentViewTypeRef.current && ySharedState) {
+          ySharedState.set('currentViewType', viewType);
+          // recalculate migrations for the new view type
+          if (calculateAndStoreMigrationsRef.current) {
+            calculateAndStoreMigrationsRef.current();
+          }
+        }
+      });
     });
 
     // total migration section (only show for absolute view)
@@ -2080,7 +2074,10 @@ const DoMi: React.FC = () => {
       // css classes handle styling now for better performance
 
       // create brush group for multi-selection (before interactive elements)
-      const brushGroup = mapGroup.append('g').attr('class', 'brush');
+      const brushGroup = mapGroup
+        .append('g')
+        .attr('class', 'brush')
+        .style('pointer-events', 'all');
       mapGroup
         .append('g')
         .attr('class', 'remote-brushes')
@@ -2332,6 +2329,11 @@ const DoMi: React.FC = () => {
             if (currentPinned.includes(stateName)) {
               const index = currentPinned.indexOf(stateName);
               targetArray.delete(index, 1);
+
+              // after unpinning, restore hover state if mouse is still over state and not pinned opposite
+              if (!oppositePinned.includes(stateName) && currentHoverArray) {
+                currentHoverArray.push([stateName]);
+              }
             } else {
               if (oppositePinned.includes(stateName)) {
                 const oppositeIndex = oppositePinned.indexOf(stateName);
@@ -2495,60 +2497,84 @@ const DoMi: React.FC = () => {
         ) as CursorData[];
 
       const overlay = d3.select(cursorOverlayRef.current);
-      overlay.selectAll('*').remove();
 
-      cursorStates.forEach((cursorData) => {
-        if (!cursorOverlayRef.current) return;
+      // use efficient d3 data join pattern instead of recreating all elements
+      const cursors = overlay
+        .selectAll<HTMLDivElement, CursorData>('div.cursor')
+        .data(cursorStates, (d) => d.clientId.toString());
 
-        const cursorDiv = document.createElement('div');
-        cursorDiv.style.position = 'absolute';
-        cursorDiv.style.left = `${cursorData.state.cursor.x}px`;
-        cursorDiv.style.top = `${cursorData.state.cursor.y}px`;
-        cursorDiv.style.pointerEvents = 'none';
-        cursorDiv.style.zIndex = '9999';
-        cursorDiv.className = cursorData.isLocal
-          ? 'local-cursor'
-          : 'remote-cursor';
+      // remove cursors for users who left
+      cursors.exit().remove();
 
-        const cursorSvg = document.createElementNS(
-          'http://www.w3.org/2000/svg',
-          'svg'
-        );
-        cursorSvg.setAttribute('width', '24');
-        cursorSvg.setAttribute('height', '24');
-        cursorSvg.style.overflow = 'visible';
+      // create new cursors for new users
+      const newCursors = cursors
+        .enter()
+        .append('div')
+        .attr('class', 'cursor')
+        .style('position', 'absolute')
+        .style('pointer-events', 'none')
+        .style('z-index', '9999')
+        .each(function (d) {
+          const cursorDiv = d3.select(this);
 
-        const cursorPath = document.createElementNS(
-          'http://www.w3.org/2000/svg',
-          'path'
-        );
-        cursorPath.setAttribute('d', 'M0,0 L24,12 L12,12 L12,24 L0,0');
-        cursorPath.setAttribute('fill', cursorData.state.user.color);
-        cursorPath.setAttribute('stroke', '#000');
-        cursorPath.setAttribute('stroke-width', '2');
-        cursorSvg.appendChild(cursorPath);
+          // set class based on local/remote
+          cursorDiv.classed('local-cursor', d.isLocal);
+          cursorDiv.classed('remote-cursor', !d.isLocal);
 
-        cursorDiv.appendChild(cursorSvg);
+          // create svg cursor icon
+          const cursorSvg = cursorDiv
+            .append('svg')
+            .attr('width', '24')
+            .attr('height', '24')
+            .style('overflow', 'visible');
 
-        if (!cursorData.isLocal) {
-          const labelDiv = document.createElement('div');
-          labelDiv.style.position = 'absolute';
-          labelDiv.style.left = '23px';
-          labelDiv.style.top = '18px';
-          labelDiv.style.background = cursorData.state.user.color;
-          labelDiv.style.color = '#ffffff';
-          labelDiv.style.padding = '4px 8px';
-          labelDiv.style.borderRadius = '4px';
-          labelDiv.style.fontSize = '14px';
-          labelDiv.style.fontWeight = '500';
-          labelDiv.style.fontFamily = 'system-ui, sans-serif';
-          labelDiv.style.whiteSpace = 'nowrap';
-          labelDiv.textContent = cursorData.state.user.name;
-          cursorDiv.appendChild(labelDiv);
-        }
+          cursorSvg
+            .append('path')
+            .attr('d', 'M0,0 L24,12 L12,12 L12,24 L0,0')
+            .attr('fill', d.state.user.color)
+            .attr('stroke', '#000')
+            .attr('stroke-width', '2');
 
-        cursorOverlayRef.current.appendChild(cursorDiv);
-      });
+          // create label for remote cursors
+          if (!d.isLocal) {
+            cursorDiv
+              .append('div')
+              .style('position', 'absolute')
+              .style('left', '23px')
+              .style('top', '18px')
+              .style('background', d.state.user.color)
+              .style('color', '#ffffff')
+              .style('padding', '4px 8px')
+              .style('border-radius', '4px')
+              .style('font-size', '14px')
+              .style('font-weight', '500')
+              .style('font-family', 'system-ui, sans-serif')
+              .style('white-space', 'nowrap')
+              .text(d.state.user.name);
+          }
+        });
+
+      // update positions for all cursors (existing + new)
+      cursors
+        .merge(newCursors)
+        .style('left', (d) => `${d.state.cursor.x}px`)
+        .style('top', (d) => `${d.state.cursor.y}px`)
+        .each(function (d) {
+          const cursorDiv = d3.select(this);
+
+          // update cursor color in case user changed it
+          cursorDiv.select('path').attr('fill', d.state.user.color);
+
+          // update label background color and text for remote cursors
+          if (!d.isLocal) {
+            const label = cursorDiv.select('div');
+            if (!label.empty()) {
+              label
+                .style('background', d.state.user.color)
+                .text(d.state.user.name);
+            }
+          }
+        });
     };
 
     const updateRemoteBrushes = () => {
@@ -2775,7 +2801,7 @@ const DoMi: React.FC = () => {
               color: '#333',
             }}
           >
-            US Tilegram Migration Visualizer
+            US Domestic Migration Visualization
           </div>
           <div
             style={{
@@ -2835,34 +2861,71 @@ const DoMi: React.FC = () => {
           transform: 'translate(-50%, -50%)',
           border: '2px solid black',
           overflow: 'hidden',
-          backgroundColor: 'white',
+          backgroundColor: '#f0f0f0',
           cursor: 'none',
+          pointerEvents: 'none',
         }}
       >
         {/* d3 map will be appended here by effects */}
       </svg>
-      {/* info panel svg structure */}
-      <svg
-        ref={panelSvgRef}
-        width={tooltipPanelWidth}
-        height={totalHeight}
+      {/* info panel wrapper with cursor tracking */}
+      <div
         style={{
           position: 'fixed',
           top: '50%',
           left: '50%',
           transform: `translate(-${totalWidth / 2}px, -50%)`,
+          width: tooltipPanelWidth,
+          height: totalHeight,
           zIndex: 1000,
+          pointerEvents: 'all',
+        }}
+        onMouseMove={(event) => {
+          // handle mouse tracking for cursor awareness in info panel
+          if (!awareness) return;
+
+          // get coordinates relative to the main container (entire visualization)
+          const containerRect = event.currentTarget
+            .closest('div')
+            ?.getBoundingClientRect();
+
+          if (containerRect) {
+            // calculate position relative to the main visualization container
+            const panelX = event.clientX - containerRect.left;
+            const panelY = event.clientY - containerRect.top;
+
+            // update local awareness state with cursor position
+            const currentState = awareness.getLocalState() as AwarenessState;
+            if (currentState) {
+              awareness.setLocalState({
+                ...currentState,
+                cursor: {
+                  x: panelX,
+                  y: panelY,
+                },
+              });
+            }
+          }
         }}
       >
-        <defs>
-          <filter id="panel-text-shadow">
-            <feDropShadow dx="0" dy="1" stdDeviation="1" floodOpacity="0.3" />
-          </filter>
-        </defs>
-        <g style={{ pointerEvents: 'all' }}>
-          {/* Panel content will be added here by D3 */}
-        </g>
-      </svg>
+        <svg
+          ref={panelSvgRef}
+          width={tooltipPanelWidth}
+          height={totalHeight}
+          style={{
+            pointerEvents: 'none',
+          }}
+        >
+          <defs>
+            <filter id="panel-text-shadow">
+              <feDropShadow dx="0" dy="1" stdDeviation="1" floodOpacity="0.3" />
+            </filter>
+          </defs>
+          <g style={{ pointerEvents: 'none' }}>
+            {/* Panel content will be added here by D3 */}
+          </g>
+        </svg>
+      </div>
       <div
         ref={cursorOverlayRef}
         style={{
@@ -2879,9 +2942,9 @@ const DoMi: React.FC = () => {
       <div
         ref={modeIndicatorRef}
         style={{
-          position: 'fixed',
-          bottom: '20px',
-          left: '50%',
+          position: 'absolute',
+          bottom: '0px',
+          left: `${totalWidth / 2}px`,
           transform: 'translateX(-50%)',
           zIndex: 1001,
           background: 'rgba(232, 27, 35, 0.9)',
