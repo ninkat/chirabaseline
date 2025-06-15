@@ -180,13 +180,14 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
   const animationFrameRef = useRef<number | null>(null);
   const activeLinesByPair = useRef<Map<string, SVGPathElement>>(new Map());
   const updateBrushInteractionsRef = useRef<(() => void) | null>(null);
-  // refs to store brush selection state for each mode
-  const originBrushSelection = useRef<
-    [[number, number], [number, number]] | null
-  >(null);
-  const destinationBrushSelection = useRef<
-    [[number, number], [number, number]] | null
-  >(null);
+
+  // refs for brush update throttling
+  const brushUpdateFrameRef = useRef<number | null>(null);
+  const pendingBrushUpdateRef = useRef<{
+    mode: 'origin' | 'destination';
+    coordinates: { x0: number; y0: number; x1: number; y1: number };
+    selectedIATAs: string[];
+  } | null>(null);
 
   // get doc from yjs context
   const yjsContext = useContext(YjsContext);
@@ -607,12 +608,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       const yDiff = Math.abs(y - transformRef.current.y);
 
       if (isFirstSync || scaleDiff > 0.001 || xDiff > 0.1 || yDiff > 0.1) {
-        console.log('[transform sync] updating transform:', {
-          scale,
-          x,
-          y,
-          isFirstSync,
-        });
         transformRef.current = { k: scale, x, y };
 
         // update the d3 transform state
@@ -1068,13 +1063,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       });
     }
 
-    console.log(
-      '[info panel] brush selections - left:',
-      allBrushLeftIATAs,
-      'right:',
-      allBrushRightIATAs
-    );
-
     // display logic: selected items are primary. hovered and brushed items are secondary if not selected.
     // for flight filtering, combine selected, hovered, and brushed items (pins are sticky hovers, brushes are multi-hovers)
     const leftFilterIATAs = Array.from(
@@ -1176,8 +1164,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       .map(getAirportByIATA)
       .filter(Boolean) as Airport[];
 
-    console.log('[info panel] left display IATAs:', uniqueLeftDisplayIATAs);
-
     // show maximum 3 airports, reserve 4th slot for "more" if needed
     const maxAirportsToShow = 3;
     const leftToShow = leftAirportsToShow.slice(0, maxAirportsToShow);
@@ -1273,8 +1259,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     const rightAirportsToShow = uniqueRightDisplayIATAs
       .map(getAirportByIATA)
       .filter(Boolean) as Airport[];
-
-    console.log('[info panel] right display IATAs:', uniqueRightDisplayIATAs);
 
     // show maximum 3 airports, reserve 4th slot for "more" if needed
     const rightToShow = rightAirportsToShow.slice(0, maxAirportsToShow);
@@ -2182,10 +2166,15 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .append('title')
           .text((d) => d.properties?.name ?? 'unknown');
 
-        // create single brush interaction group
-        const brushInteractionGroup = g
+        // create separate brush interaction groups for true separation
+        const originBrushInteractionGroup = g
           .append('g')
-          .attr('class', 'brush-interaction')
+          .attr('class', 'origin-brush-interaction')
+          .style('pointer-events', 'all');
+
+        const destinationBrushInteractionGroup = g
+          .append('g')
+          .attr('class', 'destination-brush-interaction')
           .style('pointer-events', 'all');
 
         // create brush visuals group for rendering above airports
@@ -2261,76 +2250,79 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         const switchActiveBrush = () => {
           const currentMode = hoverModeRef.current;
 
-          // save current brush selection before switching
-          const currentSelection = d3.brushSelection(
-            brushInteractionGroup.node()!
-          ) as [[number, number], [number, number]] | null;
-          const previousMode =
-            currentMode === 'origin' ? 'destination' : 'origin';
-
-          if (currentSelection && previousMode === 'origin') {
-            originBrushSelection.current = currentSelection;
-          } else if (currentSelection && previousMode === 'destination') {
-            destinationBrushSelection.current = currentSelection;
+          // show/hide the appropriate interaction groups
+          if (currentMode === 'origin') {
+            originBrushInteractionGroup.style('display', 'block');
+            destinationBrushInteractionGroup.style('display', 'none');
+          } else {
+            originBrushInteractionGroup.style('display', 'none');
+            destinationBrushInteractionGroup.style('display', 'block');
           }
 
-          // also load brush selection from yjs if available
+          // load brush selection from yjs if available for current mode
           const coordsArray =
             currentMode === 'origin'
               ? yClientBrushCoordsLeft
               : yClientBrushCoordsRight;
 
-          let brushSelectionFromYjs:
-            | [[number, number], [number, number]]
-            | null = null;
           if (coordsArray && coordsArray.has(userId)) {
             const coords = coordsArray.get(userId)!;
-            brushSelectionFromYjs = [
-              [coords.x0, coords.y0],
-              [coords.x1, coords.y1],
-            ];
-          }
+            const brushSelectionFromYjs: [[number, number], [number, number]] =
+              [
+                [coords.x0, coords.y0],
+                [coords.x1, coords.y1],
+              ];
 
-          // remove any existing brush
-          brushInteractionGroup.selectAll('.brush').remove();
-
-          // apply the appropriate brush based on current mode
-          if (currentMode === 'origin') {
-            brushInteractionGroup.call(originBrush);
-            // restore origin brush selection - prioritize yjs, fall back to local ref
-            const selectionToRestore =
-              brushSelectionFromYjs || originBrushSelection.current;
-            if (selectionToRestore) {
-              originBrush.move(brushInteractionGroup, selectionToRestore);
-            }
-          } else {
-            brushInteractionGroup.call(destinationBrush);
-            // restore destination brush selection - prioritize yjs, fall back to local ref
-            const selectionToRestore =
-              brushSelectionFromYjs || destinationBrushSelection.current;
-            if (selectionToRestore) {
-              destinationBrush.move(brushInteractionGroup, selectionToRestore);
+            // restore brush selection from yjs
+            if (currentMode === 'origin') {
+              originBrush.move(
+                originBrushInteractionGroup,
+                brushSelectionFromYjs
+              );
+            } else {
+              destinationBrush.move(
+                destinationBrushInteractionGroup,
+                brushSelectionFromYjs
+              );
             }
           }
-
-          // hide the default d3 brush visual elements
-          brushInteractionGroup
-            .select('.selection')
-            .attr('fill', 'none')
-            .attr('stroke', 'none')
-            .attr('stroke-width', 0);
-
-          brushInteractionGroup
-            .selectAll('.handle')
-            .attr('fill', 'none')
-            .attr('stroke', 'none')
-            .attr('stroke-width', 0);
         };
+
+        // set up both brush behaviors on their respective interaction groups
+        if (bbox) {
+          const extent: [[number, number], [number, number]] = [
+            [bbox.x, bbox.y],
+            [bbox.x + bbox.width, bbox.y + bbox.height],
+          ];
+          originBrush.extent(extent);
+          destinationBrush.extent(extent);
+        }
+
+        // apply brushes to their respective groups
+        originBrushInteractionGroup.call(originBrush);
+        destinationBrushInteractionGroup.call(destinationBrush);
+
+        // hide the default d3 brush visual elements for both groups
+        [originBrushInteractionGroup, destinationBrushInteractionGroup].forEach(
+          (group) => {
+            group
+              .select('.selection')
+              .attr('fill', 'none')
+              .attr('stroke', 'none')
+              .attr('stroke-width', 0);
+
+            group
+              .selectAll('.handle')
+              .attr('fill', 'none')
+              .attr('stroke', 'none')
+              .attr('stroke-width', 0);
+          }
+        );
 
         // store function in ref for keyboard handler access
         updateBrushInteractionsRef.current = switchActiveBrush;
 
-        // set initial brush
+        // set initial brush visibility
         switchActiveBrush();
 
         // brush event handlers that work with specific brush modes
@@ -2366,9 +2358,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             brushMode === 'origin' ? originBrushRect : destinationBrushRect;
 
           if (!event.selection) {
-            // hide the custom brush rect when no selection
+            // immediate updates for clearing selections
             brushRect.attr('visibility', 'hidden');
-            // clear this client's brush selection for this mode
             const targetArray =
               brushMode === 'origin'
                 ? yClientBrushSelectionsLeft
@@ -2377,38 +2368,35 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             if (targetArray && userId) {
               targetArray.set(userId, []);
             }
+
+            // cancel any pending updates
+            if (brushUpdateFrameRef.current) {
+              cancelAnimationFrame(brushUpdateFrameRef.current);
+              brushUpdateFrameRef.current = null;
+            }
+            pendingBrushUpdateRef.current = null;
             return;
           }
 
-          // get current brush selection
           const [[x0, y0], [x1, y1]] = event.selection as [
             [number, number],
             [number, number]
           ];
 
-          // update cursor position during brush - this prevents cursor from freezing
+          // immediate visual updates (no throttling needed for local ui)
           if (awareness && event.sourceEvent) {
             const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
             const currentState = awareness.getLocalState() as AwarenessState;
             if (currentState) {
               awareness.setLocalState({
                 ...currentState,
-                cursor: {
-                  x: svgX,
-                  y: svgY,
-                },
-                brushSelection: {
-                  x0,
-                  y0,
-                  x1,
-                  y1,
-                  mode: brushMode,
-                },
+                cursor: { x: svgX, y: svgY },
+                brushSelection: { x0, y0, x1, y1, mode: brushMode },
               });
             }
           }
 
-          // update the custom brush rectangle
+          // immediate brush rectangle update
           const brushFillColor =
             brushMode === 'origin'
               ? 'rgba(232, 27, 35, 0.3)' // red for origins
@@ -2422,7 +2410,7 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .attr('height', y1 - y0)
             .attr('fill', brushFillColor);
 
-          // find airports within the brush selection
+          // calculate selected airports
           const selectedAirports = allAirports.current.filter((airport) => {
             const coords = projection([airport.Longitude, airport.Latitude]);
             if (!coords) return false;
@@ -2430,35 +2418,54 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             return px >= x0 && px <= x1 && py >= y0 && py <= y1;
           });
 
-          // update this client's brush selection for this specific mode
           const oppositeSelectedArray =
             brushMode === 'origin'
               ? ySelectedAirportIATAsRight
               : ySelectedAirportIATAsLeft;
 
-          // filter out airports that are already selected in the opposite side
           const oppositeSelectedIATAs = oppositeSelectedArray?.toArray() || [];
           const selectedIATAs = selectedAirports
             .map((a) => a.IATA)
             .filter((iata) => !oppositeSelectedIATAs.includes(iata));
 
-          const targetArray =
-            brushMode === 'origin'
-              ? yClientBrushSelectionsLeft
-              : yClientBrushSelectionsRight;
+          // store pending update data
+          pendingBrushUpdateRef.current = {
+            mode: brushMode,
+            coordinates: { x0, y0, x1, y1 },
+            selectedIATAs,
+          };
 
-          if (targetArray && userId) {
-            targetArray.set(userId, selectedIATAs);
-          }
+          // throttle yjs updates using requestAnimationFrame
+          if (!brushUpdateFrameRef.current) {
+            brushUpdateFrameRef.current = requestAnimationFrame(() => {
+              const pendingUpdate = pendingBrushUpdateRef.current;
+              if (pendingUpdate && doc) {
+                // batch yjs updates in a single transaction
+                doc.transact(() => {
+                  const targetArray =
+                    pendingUpdate.mode === 'origin'
+                      ? yClientBrushSelectionsLeft
+                      : yClientBrushSelectionsRight;
 
-          // also save brush coordinates to yjs for visual sync
-          const coordsArray =
-            brushMode === 'origin'
-              ? yClientBrushCoordsLeft
-              : yClientBrushCoordsRight;
+                  const coordsArray =
+                    pendingUpdate.mode === 'origin'
+                      ? yClientBrushCoordsLeft
+                      : yClientBrushCoordsRight;
 
-          if (coordsArray && userId) {
-            coordsArray.set(userId, { x0, y0, x1, y1 });
+                  if (targetArray && userId) {
+                    targetArray.set(userId, pendingUpdate.selectedIATAs);
+                  }
+
+                  if (coordsArray && userId) {
+                    coordsArray.set(userId, pendingUpdate.coordinates);
+                  }
+                });
+              }
+
+              // reset for next frame
+              brushUpdateFrameRef.current = null;
+              pendingBrushUpdateRef.current = null;
+            });
           }
         }
 
@@ -2876,6 +2883,12 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     return () => {
       if (animationFrameRef.current)
         cancelAnimationFrame(animationFrameRef.current);
+      // cleanup brush throttling animation frame
+      if (brushUpdateFrameRef.current) {
+        cancelAnimationFrame(brushUpdateFrameRef.current);
+        brushUpdateFrameRef.current = null;
+      }
+      pendingBrushUpdateRef.current = null;
       clearAllLines();
       yHoveredAirportIATAsLeft?.unobserveDeep(yjsObserver);
       yHoveredAirportIATAsRight?.unobserveDeep(yjsObserver);
@@ -3075,6 +3088,9 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         onWheel={(event) => {
           // handle scroll wheel for flights list
           if (yPanelState && yHoveredFlights) {
+            event.preventDefault(); // prevent default scroll behavior
+            event.stopPropagation(); // prevent event bubbling
+
             // clear any hovered flights when scrolling to prevent stuck hover states
             if (yHoveredFlights.length > 0) {
               yHoveredFlights.delete(0, yHoveredFlights.length);
@@ -3084,17 +3100,35 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
               (yPanelState.get('flightsScrollY') as number) || 0;
             const scrollDelta = event.deltaY * 0.5; // smooth scrolling
 
-            // calculate scroll bounds based on current flight data
+            // collect all brush selections from all clients
+            const allBrushLeftIATAs: string[] = [];
+            const allBrushRightIATAs: string[] = [];
+
+            if (yClientBrushSelectionsLeft) {
+              yClientBrushSelectionsLeft.forEach((iatas: string[]) => {
+                allBrushLeftIATAs.push(...iatas);
+              });
+            }
+
+            if (yClientBrushSelectionsRight) {
+              yClientBrushSelectionsRight.forEach((iatas: string[]) => {
+                allBrushRightIATAs.push(...iatas);
+              });
+            }
+
+            // calculate scroll bounds based on current flight data (including brush selections)
             const leftFilterIATAs = Array.from(
               new Set([
                 ...(ySelectedAirportIATAsLeft?.toArray() || []),
                 ...(yHoveredAirportIATAsLeft?.toArray() || []),
+                ...allBrushLeftIATAs,
               ])
             );
             const rightFilterIATAs = Array.from(
               new Set([
                 ...(ySelectedAirportIATAsRight?.toArray() || []),
                 ...(yHoveredAirportIATAsRight?.toArray() || []),
+                ...allBrushRightIATAs,
               ])
             );
 
@@ -3144,7 +3178,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             );
             yPanelState.set('flightsScrollY', newScroll);
           }
-          // removed preventDefault() to avoid passive event listener errors
         }}
         onMouseMove={(event) => {
           // handle mouse tracking for cursor awareness in info panel
