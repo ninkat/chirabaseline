@@ -159,6 +159,8 @@ const buttonSectionHeight = 40; // era button height
 const buttonHeight = 48;
 const buttonSpacing = 10;
 
+// performance optimization constants
+
 // interface for migration link info
 interface MigrationLinkInfo {
   origin: string;
@@ -343,6 +345,9 @@ const DoMi: React.FC = () => {
     '2020s': [],
   });
   const stateCentroidsRef = useRef<Record<string, [number, number]>>({});
+  const stateBoundsRef = useRef<
+    Record<string, [[number, number], [number, number]]>
+  >({});
   const filteredFeaturesRef = useRef<Feature<Geometry, GeoJsonProperties>[]>(
     []
   );
@@ -370,6 +375,27 @@ const DoMi: React.FC = () => {
   // removed local brush selection refs - using yjs state instead like TravelTask
   const updateBrushInteractionsRef = useRef<(() => void) | null>(null);
   const updateRemoteBrushesRef = useRef<(() => void) | null>(null);
+
+  // performance optimization refs
+  const visualUpdateFrameRef = useRef<number | null>(null);
+  const cachedMigrationResults = useRef<
+    Map<
+      string,
+      {
+        data: MigrationLinkInfo[];
+        totalValue: number;
+        timestamp: number;
+      }
+    >
+  >(new Map());
+
+  // cache for frequently accessed DOM elements
+  const stateTilesRef = useRef<d3.Selection<
+    SVGPathElement,
+    unknown,
+    d3.BaseType,
+    unknown
+  > | null>(null);
 
   // refs for brush update throttling (like TravelTask)
   const brushUpdateFrameRef = useRef<number | null>(null);
@@ -613,42 +639,6 @@ const DoMi: React.FC = () => {
 
   const getPairKey = (origin: string, destination: string): string =>
     `${origin}->${destination}`;
-
-  // helper function to get states within a brush area using accurate AABB intersection
-  const getStatesInBrushArea = (
-    x0: number,
-    y0: number,
-    x1: number,
-    y1: number,
-    features: Feature<Geometry, GeoJsonProperties>[],
-    pathGenerator: d3.GeoPath<unknown, d3.GeoPermissibleObjects>
-  ): string[] => {
-    const selectedStates: string[] = [];
-
-    features.forEach((feature) => {
-      const stateName = (feature.properties as StateGeometry['properties'])
-        ?.name;
-
-      if (stateName) {
-        // use pathGenerator.bounds() for accurate AABB calculation
-        const bounds = pathGenerator.bounds(feature);
-        if (!bounds || bounds.length !== 2) return;
-
-        const [[stateX0, stateY0], [stateX1, stateY1]] = bounds;
-
-        // check if brush rectangle intersects with state bounding box
-        // rectangles intersect if they don't completely miss each other
-        const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
-        const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
-
-        if (!(brushMissesStateHorizontally || brushMissesStateVertically)) {
-          selectedStates.push(stateName);
-        }
-      }
-    });
-
-    return selectedStates;
-  };
 
   // helper function to get current dataset based on era and view type
   const getCurrentMigrationData = (
@@ -1279,6 +1269,7 @@ const DoMi: React.FC = () => {
       return;
 
     const calculateAndStoreMigrations = () => {
+      // use immediate calculation like TravelTask for better responsiveness
       const currentLeftHovered = yHoveredLeftStates.toArray();
       const currentRightHovered = yHoveredRightStates.toArray();
       const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
@@ -1305,6 +1296,38 @@ const DoMi: React.FC = () => {
         ...currentRightPinned,
         ...allBrushRightStates,
       ]);
+
+      // create cache key for memoization
+      const cacheKey = `${currentEraRef.current}-${
+        currentViewTypeRef.current
+      }-${Array.from(originStates).sort().join(',')}-${Array.from(destStates)
+        .sort()
+        .join(',')}`;
+
+      // check cache first
+      const cached = cachedMigrationResults.current.get(cacheKey);
+      const now = Date.now();
+      if (cached && now - cached.timestamp < 5000) {
+        // 5 second cache
+        // use cached result
+        const currentYLinks = yActiveMigrationLinks.map(
+          (m) => m.toJSON() as MigrationLinkInfo
+        );
+        if (JSON.stringify(currentYLinks) !== JSON.stringify(cached.data)) {
+          yActiveMigrationLinks.delete(0, yActiveMigrationLinks.length);
+          const yMapsToAdd = cached.data.map((link) => {
+            const yMap = new Y.Map();
+            Object.entries(link).forEach(([key, val]) => yMap.set(key, val));
+            return yMap;
+          });
+          if (yMapsToAdd.length > 0) yActiveMigrationLinks.push(yMapsToAdd);
+        }
+
+        if (yTotalMigrationValue.get('value') !== cached.totalValue) {
+          yTotalMigrationValue.set('value', cached.totalValue);
+        }
+        return;
+      }
 
       doc.transact(() => {
         // case 1: no states selected at all
@@ -1532,6 +1555,27 @@ const DoMi: React.FC = () => {
           if (yTotalMigrationValue.get('value') !== totalValue) {
             yTotalMigrationValue.set('value', totalValue);
           }
+        }
+
+        // cache the result for future use
+        const resultData = yActiveMigrationLinks.map(
+          (m) => m.toJSON() as MigrationLinkInfo
+        );
+        const resultTotalValue = yTotalMigrationValue.get('value') as number;
+        cachedMigrationResults.current.set(cacheKey, {
+          data: resultData,
+          totalValue: resultTotalValue,
+          timestamp: Date.now(),
+        });
+
+        // clean up old cache entries (keep only last 20)
+        if (cachedMigrationResults.current.size > 20) {
+          const entries = Array.from(cachedMigrationResults.current.entries());
+          entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
+          cachedMigrationResults.current.clear();
+          entries.slice(0, 20).forEach(([key, value]) => {
+            cachedMigrationResults.current.set(key, value);
+          });
         }
       }, 'update-migration-calculations');
     };
@@ -1839,75 +1883,45 @@ const DoMi: React.FC = () => {
   const renderVisuals = () => {
     if (!doc || !svgRef.current || !isInitializedRef.current) return;
 
-    const currentLeftHovered = yHoveredLeftStates?.toArray() || [];
-    const currentRightHovered = yHoveredRightStates?.toArray() || [];
-    const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
-    const currentRightPinned = yPinnedRightStates?.toArray() || [];
-    const currentActiveLinks =
-      yActiveMigrationLinks?.map(
-        (ymap) => ymap.toJSON() as MigrationLinkInfo
-      ) || [];
-
-    // get brush states from both selection arrays AND coordinate arrays
-    const allBrushLeftStates: string[] = [];
-    yClientBrushSelectionsLeft?.forEach((states) => {
-      allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
-    });
-
-    // also include states from persistent brush coordinates by recalculating selections
-    if (
-      yClientBrushCoordsLeft &&
-      filteredFeaturesRef.current.length > 0 &&
-      pathGeneratorRef.current
-    ) {
-      yClientBrushCoordsLeft.forEach((coords) => {
-        // recalculate which states are selected by this brush coordinate
-        const selectedStates = getStatesInBrushArea(
-          coords.x0,
-          coords.y0,
-          coords.x1,
-          coords.y1,
-          filteredFeaturesRef.current,
-          pathGeneratorRef.current!
-        );
-        allBrushLeftStates.push(
-          ...selectedStates.map((s: string) => s.toUpperCase())
-        );
-      });
+    // cancel any pending visual update
+    if (visualUpdateFrameRef.current) {
+      cancelAnimationFrame(visualUpdateFrameRef.current);
     }
 
-    const allBrushRightStates: string[] = [];
-    yClientBrushSelectionsRight?.forEach((states) => {
-      allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
-    });
+    // use requestAnimationFrame throttling like TravelTask for better performance
+    visualUpdateFrameRef.current = requestAnimationFrame(() => {
+      if (!doc || !svgRef.current || !isInitializedRef.current) return;
 
-    // also include states from persistent brush coordinates by recalculating selections
-    if (
-      yClientBrushCoordsRight &&
-      filteredFeaturesRef.current.length > 0 &&
-      pathGeneratorRef.current
-    ) {
-      yClientBrushCoordsRight.forEach((coords) => {
-        // recalculate which states are selected by this brush coordinate
-        const selectedStates = getStatesInBrushArea(
-          coords.x0,
-          coords.y0,
-          coords.x1,
-          coords.y1,
-          filteredFeaturesRef.current,
-          pathGeneratorRef.current!
-        );
-        allBrushRightStates.push(
-          ...selectedStates.map((s: string) => s.toUpperCase())
-        );
+      const currentLeftHovered = yHoveredLeftStates?.toArray() || [];
+      const currentRightHovered = yHoveredRightStates?.toArray() || [];
+      const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
+      const currentRightPinned = yPinnedRightStates?.toArray() || [];
+      const currentActiveLinks =
+        yActiveMigrationLinks?.map(
+          (ymap) => ymap.toJSON() as MigrationLinkInfo
+        ) || [];
+
+      // collect all brush selections from all clients (like TravelTask)
+      const allBrushLeftStates: string[] = [];
+      yClientBrushSelectionsLeft?.forEach((states) => {
+        allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
       });
-    }
 
-    // apply d3 attributes directly like TravelTask
-    d3.select(svgRef.current)
-      .select('g#map-group')
-      .selectAll('path.tile')
-      .each(function () {
+      const allBrushRightStates: string[] = [];
+      yClientBrushSelectionsRight?.forEach((states) => {
+        allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
+      });
+
+      // use cached tiles selection for better performance (like TravelTask)
+      if (!stateTilesRef.current) {
+        stateTilesRef.current = d3
+          .select(svgRef.current!)
+          .select('g#map-group')
+          .selectAll<SVGPathElement, unknown>('path.tile');
+      }
+
+      // batch DOM updates for better performance using direct D3 attributes (like TravelTask)
+      stateTilesRef.current?.each(function () {
         const tileElement = this as SVGPathElement;
         const stateName = d3.select(tileElement).attr('data-statename');
         const isLeftHover = stateName
@@ -1935,7 +1949,7 @@ const DoMi: React.FC = () => {
         const effectiveRightHover =
           isRightHover || isRightPinned || isRightBrush;
 
-        // apply d3 attributes directly like TravelTask
+        // apply d3 attributes directly like TravelTask for better performance
         const element = d3.select(tileElement);
 
         // determine fill color
@@ -1961,24 +1975,25 @@ const DoMi: React.FC = () => {
           strokeWidthToUse = hoverStrokeWidth;
         }
 
-        // apply attributes
+        // apply d3 attributes directly for maximum performance (like TravelTask)
         element
           .attr('fill', fillColor)
           .attr('stroke', strokeColorToUse)
           .attr('stroke-width', strokeWidthToUse);
       });
 
-    // use bundled line highlighting instead of creating new migration lines
-    highlightBundledLines(currentActiveLinks);
+      // use bundled line highlighting instead of creating new migration lines
+      highlightBundledLines(currentActiveLinks);
 
-    // clear any old migration lines (they're now replaced by bundled lines)
-    clearAllD3MigrationLines();
+      // clear any old migration lines (they're now replaced by bundled lines)
+      clearAllD3MigrationLines();
 
-    // update info panel
-    updateInfoPanel();
+      // update info panel
+      updateInfoPanel();
 
-    // update local brush rectangle visibility based on persistent brush data
-    updateLocalBrushRectangles();
+      // update local brush rectangle visibility based on persistent brush data
+      updateLocalBrushRectangles();
+    });
   };
 
   // function to update local brush rectangle visibility based on persistent brush data
@@ -2018,101 +2033,6 @@ const DoMi: React.FC = () => {
     } else {
       d3.select('rect.destination-brush-rect').attr('visibility', 'hidden');
     }
-  };
-
-  // render visuals with current brush selection for immediate feedback
-  const renderVisualsWithCurrentBrush = (currentBrushStates: {
-    left: string[];
-    right: string[];
-  }) => {
-    if (!doc || !svgRef.current || !isInitializedRef.current) return;
-
-    const currentLeftHovered = yHoveredLeftStates?.toArray() || [];
-    const currentRightHovered = yHoveredRightStates?.toArray() || [];
-    const currentLeftPinned = yPinnedLeftStates?.toArray() || [];
-    const currentRightPinned = yPinnedRightStates?.toArray() || [];
-    const currentActiveLinks =
-      yActiveMigrationLinks?.map(
-        (ymap) => ymap.toJSON() as MigrationLinkInfo
-      ) || [];
-
-    // use provided brush states instead of yjs arrays
-    const allBrushLeftStates = currentBrushStates.left;
-    const allBrushRightStates = currentBrushStates.right;
-
-    // apply d3 attributes directly like TravelTask
-    d3.select(svgRef.current)
-      .select('g#map-group')
-      .selectAll('path.tile')
-      .each(function () {
-        const tileElement = this as SVGPathElement;
-        const stateName = d3.select(tileElement).attr('data-statename');
-        const isLeftHover = stateName
-          ? currentLeftHovered.includes(stateName)
-          : false;
-        const isRightHover = stateName
-          ? currentRightHovered.includes(stateName)
-          : false;
-        const isLeftPinned = stateName
-          ? currentLeftPinned.includes(stateName)
-          : false;
-        const isRightPinned = stateName
-          ? currentRightPinned.includes(stateName)
-          : false;
-
-        const isLeftBrush = stateName
-          ? allBrushLeftStates.includes(stateName.toUpperCase())
-          : false;
-        const isRightBrush = stateName
-          ? allBrushRightStates.includes(stateName.toUpperCase())
-          : false;
-
-        // treat pinned states as permanently hovered for fill color
-        const effectiveLeftHover = isLeftHover || isLeftPinned || isLeftBrush;
-        const effectiveRightHover =
-          isRightHover || isRightPinned || isRightBrush;
-
-        // apply d3 attributes directly like TravelTask
-        const element = d3.select(tileElement);
-
-        // determine fill color
-        let fillColor = defaultFill;
-        if (effectiveLeftHover && effectiveRightHover) {
-          // left takes precedence when both are hovered
-          fillColor = leftHoverFill;
-        } else if (effectiveLeftHover) {
-          fillColor = leftHoverFill;
-        } else if (effectiveRightHover) {
-          fillColor = rightHoverFill;
-        }
-
-        // determine stroke and stroke-width
-        let strokeColorToUse = strokeColor;
-        let strokeWidthToUse = defaultStrokeWidth;
-
-        if (isLeftPinned || isRightPinned) {
-          // pinned styling overrides hover styling for stroke
-          strokeColorToUse = pinnedStroke;
-          strokeWidthToUse = pinnedStrokeWidth;
-        } else if (effectiveLeftHover || effectiveRightHover) {
-          strokeWidthToUse = hoverStrokeWidth;
-        }
-
-        // apply attributes
-        element
-          .attr('fill', fillColor)
-          .attr('stroke', strokeColorToUse)
-          .attr('stroke-width', strokeWidthToUse);
-      });
-
-    // use bundled line highlighting instead of creating new migration lines
-    highlightBundledLines(currentActiveLinks);
-
-    // clear any old migration lines (they're now replaced by bundled lines)
-    clearAllD3MigrationLines();
-
-    // update info panel
-    updateInfoPanel();
   };
 
   useEffect(() => {
@@ -2200,12 +2120,20 @@ const DoMi: React.FC = () => {
       pathGeneratorRef.current = pathGenerator;
 
       stateCentroidsRef.current = {};
+      stateBoundsRef.current = {}; // clear and recalculate bounds
       filteredFeatures.forEach((feature) => {
         const stateName = feature.properties?.name;
         if (stateName) {
           const centroid = pathGenerator.centroid(feature);
-          if (!isNaN(centroid[0]) && !isNaN(centroid[1]))
+          if (!isNaN(centroid[0]) && !isNaN(centroid[1])) {
             stateCentroidsRef.current[stateName.toUpperCase()] = centroid;
+          }
+
+          // pre-calculate and cache bounding boxes for performance
+          const bounds = pathGenerator.bounds(feature);
+          if (bounds && bounds.length === 2) {
+            stateBoundsRef.current[stateName.toUpperCase()] = bounds;
+          }
         }
       });
 
@@ -2459,21 +2387,21 @@ const DoMi: React.FC = () => {
           .attr('height', y1 - y0)
           .attr('fill', brushFillColor);
 
-        // find states within the brush selection
-        const selectedStates = filteredFeatures.filter((feature) => {
-          // get the bounding box of the state's geometry
-          const bounds = pathGenerator.bounds(feature);
-          if (!bounds || bounds.length !== 2) return false;
+        // find states within the brush selection using pre-calculated bounds for performance
+        const selectedStateNames: string[] = [];
+        Object.entries(stateBoundsRef.current).forEach(
+          ([stateName, bounds]) => {
+            const [[stateX0, stateY0], [stateX1, stateY1]] = bounds;
 
-          const [[stateX0, stateY0], [stateX1, stateY1]] = bounds;
+            // check if brush rectangle intersects with state bounding box
+            const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
+            const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
 
-          // check if brush rectangle intersects with state bounding box
-          // rectangles intersect if they don't completely miss each other
-          const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
-          const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
-
-          return !(brushMissesStateHorizontally || brushMissesStateVertically);
-        });
+            if (!(brushMissesStateHorizontally || brushMissesStateVertically)) {
+              selectedStateNames.push(stateName);
+            }
+          }
+        );
 
         // update this client's brush selection for this specific mode
         const oppositeSelectedArray =
@@ -2481,21 +2409,18 @@ const DoMi: React.FC = () => {
 
         // filter out states that are already pinned in the opposite side
         const oppositeSelectedStates = oppositeSelectedArray?.toArray() || [];
-        const selectedStateNames = selectedStates
-          .map((s) => s.properties?.name)
-          .filter(Boolean) as string[];
         const validSelections = selectedStateNames.filter(
-          (name) => !oppositeSelectedStates.includes(name.toUpperCase())
+          (name) => !oppositeSelectedStates.includes(name)
         );
 
         // store pending update data for throttled yjs updates
         pendingBrushUpdateRef.current = {
           mode: brushMode,
           coordinates: { x0, y0, x1, y1 },
-          selectedStates: validSelections.map((s) => s.toUpperCase()),
+          selectedStates: validSelections,
         };
 
-        // throttle yjs updates using requestAnimationFrame (60fps)
+        // throttle yjs updates using requestAnimationFrame like TravelTask for better performance
         if (!brushUpdateFrameRef.current) {
           brushUpdateFrameRef.current = requestAnimationFrame(() => {
             const pendingUpdate = pendingBrushUpdateRef.current;
@@ -2527,22 +2452,6 @@ const DoMi: React.FC = () => {
             pendingBrushUpdateRef.current = null;
           });
         }
-
-        // trigger visual update during brushing for immediate feedback with current selection
-        const allBrushLeftStates: string[] = [];
-        yClientBrushSelectionsLeft?.forEach((states) => {
-          allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
-        });
-
-        const allBrushRightStates: string[] = [];
-        yClientBrushSelectionsRight?.forEach((states) => {
-          allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
-        });
-
-        renderVisualsWithCurrentBrush({
-          left: allBrushLeftStates,
-          right: allBrushRightStates,
-        });
       }
 
       function brushEnded(
@@ -2972,15 +2881,20 @@ const DoMi: React.FC = () => {
       }
     });
 
-    const visualObserver = () => renderVisuals();
-    yHoveredLeftStates?.observeDeep(visualObserver);
-    yHoveredRightStates?.observeDeep(visualObserver);
-    yActiveMigrationLinks?.observeDeep(visualObserver);
-    yTotalMigrationValue?.observe(visualObserver);
-    yClientBrushSelectionsLeft?.observeDeep(visualObserver);
-    yClientBrushSelectionsRight?.observeDeep(visualObserver);
-    yClientBrushCoordsLeft?.observeDeep(visualObserver);
-    yClientBrushCoordsRight?.observeDeep(visualObserver);
+    // setup observers for yjs changes to reflect in d3 (like TravelTask)
+    const yjsObserver = () => {
+      console.log('[yjs observer] updating visualization due to yjs change');
+      renderVisuals();
+    };
+
+    yHoveredLeftStates?.observeDeep(yjsObserver);
+    yHoveredRightStates?.observeDeep(yjsObserver);
+    yActiveMigrationLinks?.observeDeep(yjsObserver);
+    yTotalMigrationValue?.observe(yjsObserver);
+    yClientBrushSelectionsLeft?.observeDeep(yjsObserver);
+    yClientBrushSelectionsRight?.observeDeep(yjsObserver);
+    yClientBrushCoordsLeft?.observeDeep(yjsObserver);
+    yClientBrushCoordsRight?.observeDeep(yjsObserver);
 
     const updateCursors = () => {
       if (!awareness || !cursorOverlayRef.current) return;
@@ -3121,21 +3035,26 @@ const DoMi: React.FC = () => {
     }, 'init-yjs-values');
 
     return () => {
-      // cleanup brush throttling animation frame
+      // cleanup brush throttling animation frames
       if (brushUpdateFrameRef.current) {
         cancelAnimationFrame(brushUpdateFrameRef.current);
         brushUpdateFrameRef.current = null;
       }
+
+      if (visualUpdateFrameRef.current) {
+        cancelAnimationFrame(visualUpdateFrameRef.current);
+        visualUpdateFrameRef.current = null;
+      }
       pendingBrushUpdateRef.current = null;
 
-      yHoveredLeftStates?.unobserveDeep(visualObserver);
-      yHoveredRightStates?.unobserveDeep(visualObserver);
-      yActiveMigrationLinks?.unobserveDeep(visualObserver);
-      yTotalMigrationValue?.unobserve(visualObserver);
-      yClientBrushSelectionsLeft?.unobserveDeep(visualObserver);
-      yClientBrushSelectionsRight?.unobserveDeep(visualObserver);
-      yClientBrushCoordsLeft?.unobserveDeep(visualObserver);
-      yClientBrushCoordsRight?.unobserveDeep(visualObserver);
+      yHoveredLeftStates?.unobserveDeep(yjsObserver);
+      yHoveredRightStates?.unobserveDeep(yjsObserver);
+      yActiveMigrationLinks?.unobserveDeep(yjsObserver);
+      yTotalMigrationValue?.unobserve(yjsObserver);
+      yClientBrushSelectionsLeft?.unobserveDeep(yjsObserver);
+      yClientBrushSelectionsRight?.unobserveDeep(yjsObserver);
+      yClientBrushCoordsLeft?.unobserveDeep(yjsObserver);
+      yClientBrushCoordsRight?.unobserveDeep(yjsObserver);
       if (awareness) {
         awareness.off('change', awarenessObserver);
       }
@@ -3183,8 +3102,9 @@ const DoMi: React.FC = () => {
         currentEraRef.current = era;
         currentViewTypeRef.current = viewType;
 
-        renderAllBundledLines(); // just switch to precomputed bundled lines for the new era/view
-        renderVisuals(); // then update highlights and other visual elements
+        // re-render bundled lines and visuals for new era/view type like TravelTask
+        renderAllBundledLines();
+        renderVisuals();
       }
     };
 
