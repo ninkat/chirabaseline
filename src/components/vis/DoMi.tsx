@@ -20,73 +20,15 @@ import {
   type Point,
 } from '../../utils/d3-ForceEdgeBundling';
 
-// performance optimization: add css styles for state classes
-const addPerformanceStyles = () => {
-  const styleId = 'domi-performance-styles';
-
-  // remove existing styles if they exist
-  const existingStyle = document.getElementById(styleId);
-  if (existingStyle) {
-    existingStyle.remove();
-  }
-
-  const style = document.createElement('style');
-  style.id = styleId;
-  style.textContent = `
-    /* default state styling */
-    .tile {
-      fill: rgba(170,170,170,0.4);
-      stroke: #fff;
-      stroke-width: 1.5px;
-      filter: drop-shadow(0px 2px 3px rgba(0, 0, 0, 0.2));
-    }
-    
-    /* hover states */
-    .tile.state-hover-left {
-      fill: rgba(232, 27, 35, 0.6);
-      stroke-width: 2.5px;
-    }
-    
-    .tile.state-hover-right {
-      fill: rgba(0, 174, 243, 0.6);
-      stroke-width: 2.5px;
-    }
-    
-    /* pinned states (overrides hover styling) */
-    .tile.state-pinned {
-      stroke: #FFD700;
-      stroke-width: 3px;
-    }
-    
-    /* bundled line default styling */
-    .bundled-migration-line {
-      fill: none;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-    
-    /* highlighted line styling */
-    .bundled-migration-line.line-dimmed {
-      opacity: 0.3;
-    }
-    
-    .highlighted-migration-line {
-      fill: none;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      stroke-opacity: 1;
-    }
-    
-    .highlighted-migration-line-outline {
-      fill: none;
-      stroke: black;
-      stroke-opacity: 0.95;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-  `;
-  document.head.appendChild(style);
-};
+// constants for styling (like TravelTask)
+const defaultFill = 'rgba(170, 170, 170, 0.4)';
+const strokeColor = '#fff';
+const defaultStrokeWidth = 1.5;
+const leftHoverFill = 'rgba(232, 27, 35, 0.6)';
+const rightHoverFill = 'rgba(0, 174, 243, 0.6)';
+const hoverStrokeWidth = 2.5;
+const pinnedStroke = '#FFD700';
+const pinnedStrokeWidth = 3;
 
 // removed gesture-specific interfaces
 
@@ -177,8 +119,8 @@ type Era = '1960s' | '1990s' | '2020s';
 // view type for absolute vs rate data
 type ViewType = 'absolute' | 'rate';
 
-// constants for hover and selection styling (moved to css for performance)
-// note: styling constants are now defined in css classes for better performance
+// constants for hover and selection styling (like TravelTask)
+// note: styling constants are now used with d3 attributes for better performance
 
 // constants for edge bundling algorithm
 const EDGE_BUNDLING_COMPATIBILITY_THRESHOLD = 0.1; // much lower for aggressive bundling - more edges bundle together
@@ -401,6 +343,13 @@ const DoMi: React.FC = () => {
     '2020s': [],
   });
   const stateCentroidsRef = useRef<Record<string, [number, number]>>({});
+  const filteredFeaturesRef = useRef<Feature<Geometry, GeoJsonProperties>[]>(
+    []
+  );
+  const pathGeneratorRef = useRef<d3.GeoPath<
+    unknown,
+    d3.GeoPermissibleObjects
+  > | null>(null);
   const activeLinesByPair = useRef<Map<string, SVGPathElement>>(new Map());
   const bundledPathsRef = useRef<
     Record<
@@ -418,15 +367,26 @@ const DoMi: React.FC = () => {
   const currentEraRef = useRef<Era>('2020s');
   const currentViewTypeRef = useRef<ViewType>('absolute');
   const calculateAndStoreMigrationsRef = useRef<(() => void) | null>(null);
-  const originBrushSelection = useRef<
-    [[number, number], [number, number]] | null
-  >(null);
-  const destinationBrushSelection = useRef<
-    [[number, number], [number, number]] | null
-  >(null);
+  // removed local brush selection refs - using yjs state instead like TravelTask
   const updateBrushInteractionsRef = useRef<(() => void) | null>(null);
   const updateRemoteBrushesRef = useRef<(() => void) | null>(null);
-  const brushInteractionGroupRef = useRef<d3.Selection<
+
+  // refs for brush update throttling (like TravelTask)
+  const brushUpdateFrameRef = useRef<number | null>(null);
+  const pendingBrushUpdateRef = useRef<{
+    mode: 'origin' | 'destination';
+    coordinates: { x0: number; y0: number; x1: number; y1: number };
+    selectedStates: string[];
+  } | null>(null);
+
+  // remove single brush interaction group ref and replace with separate ones
+  const originBrushInteractionGroupRef = useRef<d3.Selection<
+    SVGGElement,
+    unknown,
+    null,
+    undefined
+  > | null>(null);
+  const destinationBrushInteractionGroupRef = useRef<d3.Selection<
     SVGGElement,
     unknown,
     null,
@@ -654,42 +614,38 @@ const DoMi: React.FC = () => {
   const getPairKey = (origin: string, destination: string): string =>
     `${origin}->${destination}`;
 
-  // helper function to get states within a brush area
+  // helper function to get states within a brush area using accurate AABB intersection
   const getStatesInBrushArea = (
     x0: number,
     y0: number,
     x1: number,
-    y1: number
+    y1: number,
+    features: Feature<Geometry, GeoJsonProperties>[],
+    pathGenerator: d3.GeoPath<unknown, d3.GeoPermissibleObjects>
   ): string[] => {
-    if (!svgRef.current) return [];
-
     const selectedStates: string[] = [];
 
-    // get all state path elements
-    d3.select(svgRef.current)
-      .select('g#map-group')
-      .selectAll('path.tile')
-      .each(function () {
-        const pathElement = this as SVGPathElement;
-        const stateName = d3.select(pathElement).attr('data-statename');
+    features.forEach((feature) => {
+      const stateName = (feature.properties as StateGeometry['properties'])
+        ?.name;
 
-        if (stateName) {
-          // get the bounding box of the state's geometry
-          const bbox = pathElement.getBBox();
-          const stateX0 = bbox.x + mapLeftOffset;
-          const stateY0 = bbox.y - totalHeight * 0.1;
-          const stateX1 = stateX0 + bbox.width;
-          const stateY1 = stateY0 + bbox.height;
+      if (stateName) {
+        // use pathGenerator.bounds() for accurate AABB calculation
+        const bounds = pathGenerator.bounds(feature);
+        if (!bounds || bounds.length !== 2) return;
 
-          // check if brush rectangle intersects with state bounding box
-          const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
-          const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
+        const [[stateX0, stateY0], [stateX1, stateY1]] = bounds;
 
-          if (!(brushMissesStateHorizontally || brushMissesStateVertically)) {
-            selectedStates.push(stateName);
-          }
+        // check if brush rectangle intersects with state bounding box
+        // rectangles intersect if they don't completely miss each other
+        const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
+        const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
+
+        if (!(brushMissesStateHorizontally || brushMissesStateVertically)) {
+          selectedStates.push(stateName);
         }
-      });
+      }
+    });
 
     return selectedStates;
   };
@@ -1016,11 +972,14 @@ const DoMi: React.FC = () => {
         .attr('d', pathData)
         .attr('stroke', `url(#${gradientId})`)
         .attr('stroke-width', strokeWidth) // linearly scaled thickness
+        .attr('fill', 'none')
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round')
         .attr('data-pair-key', pairKey)
         .attr('data-value', data.value) // store value for potential use
         .attr('data-gradient-id', gradientId) // store gradient id for highlighting
         .attr('data-path-data', pathData); // store path data for highlighting
-      // css classes handle fill and stroke styling for performance
+      // styling now handled by d3 attributes like TravelTask
     });
   };
 
@@ -1064,7 +1023,7 @@ const DoMi: React.FC = () => {
     // reset all bundled lines to their original appearance without recalculating stroke widths
     bundledLinesGroup
       .selectAll('path.bundled-migration-line')
-      .classed('line-dimmed', false)
+      .attr('opacity', 1)
       .style('filter', 'none');
 
     // highlight the active migration links by creating thick, high-opacity gradient lines in the foreground group
@@ -1165,9 +1124,14 @@ const DoMi: React.FC = () => {
               .append('path')
               .attr('class', 'highlighted-migration-line-outline')
               .attr('d', pathData)
+              .attr('stroke', 'black')
               .attr('stroke-width', outlineStrokeWidth)
+              .attr('stroke-opacity', 0.95)
+              .attr('fill', 'none')
+              .attr('stroke-linecap', 'round')
+              .attr('stroke-linejoin', 'round')
               .attr('data-pair-key', pairKey); // for consistency
-            // css classes handle stroke, fill, opacity, and line caps
+            // styling now handled by d3 attributes like TravelTask
 
             // draw the main gradient path on top
             highlightedLinesGroup
@@ -1176,8 +1140,12 @@ const DoMi: React.FC = () => {
               .attr('d', pathData)
               .attr('stroke', `url(#${highlightGradientId})`) // use new distinctive gradient
               .attr('stroke-width', backgroundStrokeWidth) // same width as background line
+              .attr('fill', 'none')
+              .attr('stroke-linecap', 'round')
+              .attr('stroke-linejoin', 'round')
+              .attr('stroke-opacity', 1)
               .attr('data-pair-key', pairKey);
-            // css classes handle fill, opacity, and line caps
+            // styling now handled by d3 attributes like TravelTask
           }
         } else {
           // this link is not in the bundled paths, create a temporary straight line with gradient
@@ -1257,9 +1225,14 @@ const DoMi: React.FC = () => {
                 .append('path')
                 .attr('class', 'highlighted-migration-line-outline temporary')
                 .attr('d', straightLinePath)
+                .attr('stroke', 'black')
                 .attr('stroke-width', temporaryOutlineStrokeWidth)
+                .attr('stroke-opacity', 0.95)
+                .attr('fill', 'none')
+                .attr('stroke-linecap', 'round')
+                .attr('stroke-linejoin', 'round')
                 .attr('data-pair-key', pairKey);
-              // css classes handle stroke, fill, opacity, and line caps
+              // styling now handled by d3 attributes like TravelTask
 
               // create highlighted line using temporary gradient with background-equivalent width
               highlightedLinesGroup
@@ -1268,8 +1241,12 @@ const DoMi: React.FC = () => {
                 .attr('d', straightLinePath)
                 .attr('stroke', `url(#${tempGradientId})`) // use temporary gradient
                 .attr('stroke-width', backgroundEquivalentWidth) // same width as background would be
+                .attr('fill', 'none')
+                .attr('stroke-linecap', 'round')
+                .attr('stroke-linejoin', 'round')
+                .attr('stroke-opacity', 1)
                 .attr('data-pair-key', pairKey);
-              // css classes handle fill, opacity, and line caps
+              // styling now handled by d3 attributes like TravelTask
             }
           }
         }
@@ -1878,14 +1855,20 @@ const DoMi: React.FC = () => {
     });
 
     // also include states from persistent brush coordinates by recalculating selections
-    if (yClientBrushCoordsLeft && svgRef.current) {
+    if (
+      yClientBrushCoordsLeft &&
+      filteredFeaturesRef.current.length > 0 &&
+      pathGeneratorRef.current
+    ) {
       yClientBrushCoordsLeft.forEach((coords) => {
         // recalculate which states are selected by this brush coordinate
         const selectedStates = getStatesInBrushArea(
           coords.x0,
           coords.y0,
           coords.x1,
-          coords.y1
+          coords.y1,
+          filteredFeaturesRef.current,
+          pathGeneratorRef.current!
         );
         allBrushLeftStates.push(
           ...selectedStates.map((s: string) => s.toUpperCase())
@@ -1899,14 +1882,20 @@ const DoMi: React.FC = () => {
     });
 
     // also include states from persistent brush coordinates by recalculating selections
-    if (yClientBrushCoordsRight && svgRef.current) {
+    if (
+      yClientBrushCoordsRight &&
+      filteredFeaturesRef.current.length > 0 &&
+      pathGeneratorRef.current
+    ) {
       yClientBrushCoordsRight.forEach((coords) => {
         // recalculate which states are selected by this brush coordinate
         const selectedStates = getStatesInBrushArea(
           coords.x0,
           coords.y0,
           coords.x1,
-          coords.y1
+          coords.y1,
+          filteredFeaturesRef.current,
+          pathGeneratorRef.current!
         );
         allBrushRightStates.push(
           ...selectedStates.map((s: string) => s.toUpperCase())
@@ -1914,7 +1903,7 @@ const DoMi: React.FC = () => {
       });
     }
 
-    // performance optimization: use css classes instead of individual attribute updates
+    // apply d3 attributes directly like TravelTask
     d3.select(svgRef.current)
       .select('g#map-group')
       .selectAll('path.tile')
@@ -1946,29 +1935,37 @@ const DoMi: React.FC = () => {
         const effectiveRightHover =
           isRightHover || isRightPinned || isRightBrush;
 
-        // apply css classes for performance - much faster than individual attribute updates
+        // apply d3 attributes directly like TravelTask
         const element = d3.select(tileElement);
 
-        // remove all state classes first
-        element
-          .classed('state-hover-left', false)
-          .classed('state-hover-right', false)
-          .classed('state-pinned', false);
-
-        // apply appropriate classes based on state
+        // determine fill color
+        let fillColor = defaultFill;
         if (effectiveLeftHover && effectiveRightHover) {
           // left takes precedence when both are hovered
-          element.classed('state-hover-left', true);
+          fillColor = leftHoverFill;
         } else if (effectiveLeftHover) {
-          element.classed('state-hover-left', true);
+          fillColor = leftHoverFill;
         } else if (effectiveRightHover) {
-          element.classed('state-hover-right', true);
+          fillColor = rightHoverFill;
         }
 
-        // pinned styling overrides hover styling for stroke
+        // determine stroke and stroke-width
+        let strokeColorToUse = strokeColor;
+        let strokeWidthToUse = defaultStrokeWidth;
+
         if (isLeftPinned || isRightPinned) {
-          element.classed('state-pinned', true);
+          // pinned styling overrides hover styling for stroke
+          strokeColorToUse = pinnedStroke;
+          strokeWidthToUse = pinnedStrokeWidth;
+        } else if (effectiveLeftHover || effectiveRightHover) {
+          strokeWidthToUse = hoverStrokeWidth;
         }
+
+        // apply attributes
+        element
+          .attr('fill', fillColor)
+          .attr('stroke', strokeColorToUse)
+          .attr('stroke-width', strokeWidthToUse);
       });
 
     // use bundled line highlighting instead of creating new migration lines
@@ -2043,7 +2040,7 @@ const DoMi: React.FC = () => {
     const allBrushLeftStates = currentBrushStates.left;
     const allBrushRightStates = currentBrushStates.right;
 
-    // performance optimization: use css classes instead of individual attribute updates
+    // apply d3 attributes directly like TravelTask
     d3.select(svgRef.current)
       .select('g#map-group')
       .selectAll('path.tile')
@@ -2075,29 +2072,37 @@ const DoMi: React.FC = () => {
         const effectiveRightHover =
           isRightHover || isRightPinned || isRightBrush;
 
-        // apply css classes for performance - much faster than individual attribute updates
+        // apply d3 attributes directly like TravelTask
         const element = d3.select(tileElement);
 
-        // remove all state classes first
-        element
-          .classed('state-hover-left', false)
-          .classed('state-hover-right', false)
-          .classed('state-pinned', false);
-
-        // apply appropriate classes based on state
+        // determine fill color
+        let fillColor = defaultFill;
         if (effectiveLeftHover && effectiveRightHover) {
           // left takes precedence when both are hovered
-          element.classed('state-hover-left', true);
+          fillColor = leftHoverFill;
         } else if (effectiveLeftHover) {
-          element.classed('state-hover-left', true);
+          fillColor = leftHoverFill;
         } else if (effectiveRightHover) {
-          element.classed('state-hover-right', true);
+          fillColor = rightHoverFill;
         }
 
-        // pinned styling overrides hover styling for stroke
+        // determine stroke and stroke-width
+        let strokeColorToUse = strokeColor;
+        let strokeWidthToUse = defaultStrokeWidth;
+
         if (isLeftPinned || isRightPinned) {
-          element.classed('state-pinned', true);
+          // pinned styling overrides hover styling for stroke
+          strokeColorToUse = pinnedStroke;
+          strokeWidthToUse = pinnedStrokeWidth;
+        } else if (effectiveLeftHover || effectiveRightHover) {
+          strokeWidthToUse = hoverStrokeWidth;
         }
+
+        // apply attributes
+        element
+          .attr('fill', fillColor)
+          .attr('stroke', strokeColorToUse)
+          .attr('stroke-width', strokeWidthToUse);
       });
 
     // use bundled line highlighting instead of creating new migration lines
@@ -2190,6 +2195,10 @@ const DoMi: React.FC = () => {
             );
           });
 
+      // store in refs for use in brush functions
+      filteredFeaturesRef.current = filteredFeatures;
+      pathGeneratorRef.current = pathGenerator;
+
       stateCentroidsRef.current = {};
       filteredFeatures.forEach((feature) => {
         const stateName = feature.properties?.name;
@@ -2200,8 +2209,7 @@ const DoMi: React.FC = () => {
         }
       });
 
-      // add performance styles to document head
-      addPerformanceStyles();
+      // removed css performance styles - using d3 attributes directly
 
       // create map features group first (background, non-interactive)
       const mapFeaturesGroup = mapGroup
@@ -2219,8 +2227,12 @@ const DoMi: React.FC = () => {
           'data-statename',
           (d) =>
             (d.properties as StateGeometry['properties'])?.name || 'unknown'
-        );
-      // css classes handle styling now for better performance
+        )
+        .attr('fill', defaultFill)
+        .attr('stroke', strokeColor)
+        .attr('stroke-width', defaultStrokeWidth)
+        .style('filter', 'drop-shadow(0px 2px 3px rgba(0, 0, 0, 0.2))');
+      // styling now handled by d3 attributes like TravelTask
 
       const bbox = mapGroup.node()?.getBBox();
 
@@ -2258,88 +2270,98 @@ const DoMi: React.FC = () => {
         destinationBrush.extent(extent);
       }
 
-      // create brush groups AFTER all map elements (so they appear on top)
-      const brushInteractionGroup = mapGroup
+      // create separate brush interaction groups for true separation
+      const originBrushInteractionGroup = mapGroup
         .append('g')
-        .attr('class', 'brush-interaction')
+        .attr('class', 'origin-brush-interaction')
         .style('pointer-events', 'all');
 
-      // store in ref for external access
-      brushInteractionGroupRef.current = brushInteractionGroup;
+      const destinationBrushInteractionGroup = mapGroup
+        .append('g')
+        .attr('class', 'destination-brush-interaction')
+        .style('pointer-events', 'all');
+
+      // store in refs for external access
+      originBrushInteractionGroupRef.current = originBrushInteractionGroup;
+      destinationBrushInteractionGroupRef.current =
+        destinationBrushInteractionGroup;
 
       // function to switch active brush based on current mode
       const switchActiveBrush = () => {
         const currentMode = hoverModeRef.current;
 
-        // save current brush selection before switching
-        const currentSelection = d3.brushSelection(
-          brushInteractionGroup.node()!
-        ) as [[number, number], [number, number]] | null;
-        const previousMode =
-          currentMode === 'origin' ? 'destination' : 'origin';
-
-        if (currentSelection && previousMode === 'origin') {
-          originBrushSelection.current = currentSelection;
-        } else if (currentSelection && previousMode === 'destination') {
-          destinationBrushSelection.current = currentSelection;
+        // show/hide the appropriate interaction groups
+        if (currentMode === 'origin') {
+          originBrushInteractionGroup.style('display', 'block');
+          destinationBrushInteractionGroup.style('display', 'none');
+        } else {
+          originBrushInteractionGroup.style('display', 'none');
+          destinationBrushInteractionGroup.style('display', 'block');
         }
 
-        // also load brush selection from yjs if available
+        // load brush selection from yjs if available for current mode
         const coordsArray =
           currentMode === 'origin'
             ? yClientBrushCoordsLeft
             : yClientBrushCoordsRight;
 
-        let brushSelectionFromYjs: [[number, number], [number, number]] | null =
-          null;
         if (coordsArray && coordsArray.has(userId)) {
           const coords = coordsArray.get(userId)!;
-          brushSelectionFromYjs = [
+          const brushSelectionFromYjs: [[number, number], [number, number]] = [
             [coords.x0, coords.y0],
             [coords.x1, coords.y1],
           ];
-        }
 
-        // remove any existing brush
-        brushInteractionGroup.selectAll('.brush').remove();
-
-        // apply the appropriate brush based on current mode
-        if (currentMode === 'origin') {
-          brushInteractionGroup.call(originBrush);
-          // restore origin brush selection - prioritize yjs, fall back to local ref
-          const selectionToRestore =
-            brushSelectionFromYjs || originBrushSelection.current;
-          if (selectionToRestore) {
-            originBrush.move(brushInteractionGroup, selectionToRestore);
-          }
-        } else {
-          brushInteractionGroup.call(destinationBrush);
-          // restore destination brush selection - prioritize yjs, fall back to local ref
-          const selectionToRestore =
-            brushSelectionFromYjs || destinationBrushSelection.current;
-          if (selectionToRestore) {
-            destinationBrush.move(brushInteractionGroup, selectionToRestore);
+          // restore brush selection from yjs
+          if (currentMode === 'origin') {
+            originBrush.move(
+              originBrushInteractionGroup,
+              brushSelectionFromYjs
+            );
+          } else {
+            destinationBrush.move(
+              destinationBrushInteractionGroup,
+              brushSelectionFromYjs
+            );
           }
         }
-
-        // hide the default d3 brush visual elements
-        brushInteractionGroup
-          .select('.selection')
-          .attr('fill', 'none')
-          .attr('stroke', 'none')
-          .attr('stroke-width', 0);
-
-        brushInteractionGroup
-          .selectAll('.handle')
-          .attr('fill', 'none')
-          .attr('stroke', 'none')
-          .attr('stroke-width', 0);
       };
+
+      // set up both brush behaviors on their respective interaction groups
+      if (bbox) {
+        const extent: [[number, number], [number, number]] = [
+          [bbox.x, bbox.y],
+          [bbox.x + bbox.width, bbox.y + bbox.height],
+        ];
+        originBrush.extent(extent);
+        destinationBrush.extent(extent);
+      }
+
+      // apply brushes to their respective groups
+      originBrushInteractionGroup.call(originBrush);
+      destinationBrushInteractionGroup.call(destinationBrush);
+
+      // hide the default d3 brush visual elements for both groups
+      [originBrushInteractionGroup, destinationBrushInteractionGroup].forEach(
+        (group) => {
+          group
+            .select('.selection')
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0);
+
+          group
+            .selectAll('.handle')
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0);
+        }
+      );
 
       // store function in ref for keyboard handler access
       updateBrushInteractionsRef.current = switchActiveBrush;
 
-      // set initial brush
+      // set initial brush visibility
       switchActiveBrush();
 
       // brush event handlers that work with specific brush modes
@@ -2375,9 +2397,8 @@ const DoMi: React.FC = () => {
           brushMode === 'origin' ? originBrushRect : destinationBrushRect;
 
         if (!event.selection) {
-          // hide the custom brush rect when no selection
+          // immediate updates for clearing selections
           brushRect.attr('visibility', 'hidden');
-          // clear this client's brush selection for this mode
           const targetArray =
             brushMode === 'origin'
               ? yClientBrushSelectionsLeft
@@ -2386,6 +2407,13 @@ const DoMi: React.FC = () => {
           if (targetArray && userId) {
             targetArray.set(userId, []);
           }
+
+          // cancel any pending updates
+          if (brushUpdateFrameRef.current) {
+            cancelAnimationFrame(brushUpdateFrameRef.current);
+            brushUpdateFrameRef.current = null;
+          }
+          pendingBrushUpdateRef.current = null;
           return;
         }
 
@@ -2460,26 +2488,44 @@ const DoMi: React.FC = () => {
           (name) => !oppositeSelectedStates.includes(name.toUpperCase())
         );
 
-        const targetArray =
-          brushMode === 'origin'
-            ? yClientBrushSelectionsLeft
-            : yClientBrushSelectionsRight;
+        // store pending update data for throttled yjs updates
+        pendingBrushUpdateRef.current = {
+          mode: brushMode,
+          coordinates: { x0, y0, x1, y1 },
+          selectedStates: validSelections.map((s) => s.toUpperCase()),
+        };
 
-        if (targetArray && userId) {
-          targetArray.set(
-            userId,
-            validSelections.map((s) => s.toUpperCase())
-          );
-        }
+        // throttle yjs updates using requestAnimationFrame (60fps)
+        if (!brushUpdateFrameRef.current) {
+          brushUpdateFrameRef.current = requestAnimationFrame(() => {
+            const pendingUpdate = pendingBrushUpdateRef.current;
+            if (pendingUpdate && doc) {
+              // batch yjs updates in a single transaction
+              doc.transact(() => {
+                const targetArray =
+                  pendingUpdate.mode === 'origin'
+                    ? yClientBrushSelectionsLeft
+                    : yClientBrushSelectionsRight;
 
-        // also save brush coordinates to yjs for visual sync
-        const coordsArray =
-          brushMode === 'origin'
-            ? yClientBrushCoordsLeft
-            : yClientBrushCoordsRight;
+                const coordsArray =
+                  pendingUpdate.mode === 'origin'
+                    ? yClientBrushCoordsLeft
+                    : yClientBrushCoordsRight;
 
-        if (coordsArray && userId) {
-          coordsArray.set(userId, { x0, y0, x1, y1 });
+                if (targetArray && userId) {
+                  targetArray.set(userId, pendingUpdate.selectedStates);
+                }
+
+                if (coordsArray && userId) {
+                  coordsArray.set(userId, pendingUpdate.coordinates);
+                }
+              });
+            }
+
+            // reset for next frame
+            brushUpdateFrameRef.current = null;
+            pendingBrushUpdateRef.current = null;
+          });
         }
 
         // trigger visual update during brushing for immediate feedback with current selection
@@ -2684,8 +2730,12 @@ const DoMi: React.FC = () => {
             (d.properties as StateGeometry['properties'])?.name || 'unknown'
         )
         .attr('d', pathGenerator)
+        .attr('fill', defaultFill)
+        .attr('stroke', strokeColor)
+        .attr('stroke-width', defaultStrokeWidth)
+        .style('filter', 'drop-shadow(0px 2px 3px rgba(0, 0, 0, 0.2))')
         .style('cursor', 'pointer');
-      // css classes handle styling now for better performance
+      // styling now handled by d3 attributes like TravelTask
 
       // add hover event handlers to state tiles
       stateTiles
@@ -3071,6 +3121,13 @@ const DoMi: React.FC = () => {
     }, 'init-yjs-values');
 
     return () => {
+      // cleanup brush throttling animation frame
+      if (brushUpdateFrameRef.current) {
+        cancelAnimationFrame(brushUpdateFrameRef.current);
+        brushUpdateFrameRef.current = null;
+      }
+      pendingBrushUpdateRef.current = null;
+
       yHoveredLeftStates?.unobserveDeep(visualObserver);
       yHoveredRightStates?.unobserveDeep(visualObserver);
       yActiveMigrationLinks?.unobserveDeep(visualObserver);
