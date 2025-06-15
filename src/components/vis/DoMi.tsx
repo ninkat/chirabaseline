@@ -418,6 +418,20 @@ const DoMi: React.FC = () => {
   const currentEraRef = useRef<Era>('2020s');
   const currentViewTypeRef = useRef<ViewType>('absolute');
   const calculateAndStoreMigrationsRef = useRef<(() => void) | null>(null);
+  const originBrushSelection = useRef<
+    [[number, number], [number, number]] | null
+  >(null);
+  const destinationBrushSelection = useRef<
+    [[number, number], [number, number]] | null
+  >(null);
+  const updateBrushInteractionsRef = useRef<(() => void) | null>(null);
+  const updateRemoteBrushesRef = useRef<(() => void) | null>(null);
+  const brushInteractionGroupRef = useRef<d3.Selection<
+    SVGGElement,
+    unknown,
+    null,
+    undefined
+  > | null>(null);
 
   const { doc, awareness } = useContext(YjsContext) ?? {};
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
@@ -433,6 +447,18 @@ const DoMi: React.FC = () => {
   const yClientBrushSelectionsRight = doc?.getMap<string[]>(
     'usTileClientBrushSelectionsRight'
   );
+  const yClientBrushCoordsLeft = doc?.getMap<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }>('usTileClientBrushCoordsLeft');
+  const yClientBrushCoordsRight = doc?.getMap<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }>('usTileClientBrushCoordsRight');
   const yActiveMigrationLinks = doc?.getArray<Y.Map<unknown>>(
     'usTileActiveMigrationLinks'
   );
@@ -540,6 +566,11 @@ const DoMi: React.FC = () => {
         hoverModeRef.current =
           hoverModeRef.current === 'origin' ? 'destination' : 'origin';
         updateModeIndicator();
+
+        // switch active brush when mode changes
+        if (updateBrushInteractionsRef.current) {
+          updateBrushInteractionsRef.current();
+        }
       }
     };
 
@@ -622,6 +653,46 @@ const DoMi: React.FC = () => {
 
   const getPairKey = (origin: string, destination: string): string =>
     `${origin}->${destination}`;
+
+  // helper function to get states within a brush area
+  const getStatesInBrushArea = (
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number
+  ): string[] => {
+    if (!svgRef.current) return [];
+
+    const selectedStates: string[] = [];
+
+    // get all state path elements
+    d3.select(svgRef.current)
+      .select('g#map-group')
+      .selectAll('path.tile')
+      .each(function () {
+        const pathElement = this as SVGPathElement;
+        const stateName = d3.select(pathElement).attr('data-statename');
+
+        if (stateName) {
+          // get the bounding box of the state's geometry
+          const bbox = pathElement.getBBox();
+          const stateX0 = bbox.x + mapLeftOffset;
+          const stateY0 = bbox.y - totalHeight * 0.1;
+          const stateX1 = stateX0 + bbox.width;
+          const stateY1 = stateY0 + bbox.height;
+
+          // check if brush rectangle intersects with state bounding box
+          const brushMissesStateHorizontally = x1 < stateX0 || x0 > stateX1;
+          const brushMissesStateVertically = y1 < stateY0 || y0 > stateY1;
+
+          if (!(brushMissesStateHorizontally || brushMissesStateVertically)) {
+            selectedStates.push(stateName);
+          }
+        }
+      });
+
+    return selectedStates;
+  };
 
   // helper function to get current dataset based on era and view type
   const getCurrentMigrationData = (
@@ -1223,6 +1294,8 @@ const DoMi: React.FC = () => {
       !yTotalMigrationValue ||
       !yClientBrushSelectionsLeft ||
       !yClientBrushSelectionsRight ||
+      !yClientBrushCoordsLeft ||
+      !yClientBrushCoordsRight ||
       getCurrentMigrationData(currentEraRef.current, currentViewTypeRef.current)
         .length === 0
     )
@@ -1798,14 +1871,48 @@ const DoMi: React.FC = () => {
         (ymap) => ymap.toJSON() as MigrationLinkInfo
       ) || [];
 
+    // get brush states from both selection arrays AND coordinate arrays
     const allBrushLeftStates: string[] = [];
     yClientBrushSelectionsLeft?.forEach((states) => {
       allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
     });
+
+    // also include states from persistent brush coordinates by recalculating selections
+    if (yClientBrushCoordsLeft && svgRef.current) {
+      yClientBrushCoordsLeft.forEach((coords) => {
+        // recalculate which states are selected by this brush coordinate
+        const selectedStates = getStatesInBrushArea(
+          coords.x0,
+          coords.y0,
+          coords.x1,
+          coords.y1
+        );
+        allBrushLeftStates.push(
+          ...selectedStates.map((s: string) => s.toUpperCase())
+        );
+      });
+    }
+
     const allBrushRightStates: string[] = [];
     yClientBrushSelectionsRight?.forEach((states) => {
       allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
     });
+
+    // also include states from persistent brush coordinates by recalculating selections
+    if (yClientBrushCoordsRight && svgRef.current) {
+      yClientBrushCoordsRight.forEach((coords) => {
+        // recalculate which states are selected by this brush coordinate
+        const selectedStates = getStatesInBrushArea(
+          coords.x0,
+          coords.y0,
+          coords.x1,
+          coords.y1
+        );
+        allBrushRightStates.push(
+          ...selectedStates.map((s: string) => s.toUpperCase())
+        );
+      });
+    }
 
     // performance optimization: use css classes instead of individual attribute updates
     d3.select(svgRef.current)
@@ -1828,10 +1935,10 @@ const DoMi: React.FC = () => {
           : false;
 
         const isLeftBrush = stateName
-          ? allBrushLeftStates.includes(stateName)
+          ? allBrushLeftStates.includes(stateName.toUpperCase())
           : false;
         const isRightBrush = stateName
-          ? allBrushRightStates.includes(stateName)
+          ? allBrushRightStates.includes(stateName.toUpperCase())
           : false;
 
         // treat pinned states as permanently hovered for fill color
@@ -1872,6 +1979,48 @@ const DoMi: React.FC = () => {
 
     // update info panel
     updateInfoPanel();
+
+    // update local brush rectangle visibility based on persistent brush data
+    updateLocalBrushRectangles();
+  };
+
+  // function to update local brush rectangle visibility based on persistent brush data
+  const updateLocalBrushRectangles = () => {
+    if (!yClientBrushCoordsLeft || !yClientBrushCoordsRight || !userId) return;
+
+    // check if local user has persistent brush coordinates
+    const leftCoords = yClientBrushCoordsLeft.get(userId);
+    const rightCoords = yClientBrushCoordsRight.get(userId);
+
+    // update origin brush rectangle
+    if (leftCoords) {
+      const originBrushRect = d3.select('rect.origin-brush-rect');
+      if (!originBrushRect.empty()) {
+        originBrushRect
+          .attr('visibility', 'visible')
+          .attr('x', leftCoords.x0)
+          .attr('y', leftCoords.y0)
+          .attr('width', leftCoords.x1 - leftCoords.x0)
+          .attr('height', leftCoords.y1 - leftCoords.y0);
+      }
+    } else {
+      d3.select('rect.origin-brush-rect').attr('visibility', 'hidden');
+    }
+
+    // update destination brush rectangle
+    if (rightCoords) {
+      const destinationBrushRect = d3.select('rect.destination-brush-rect');
+      if (!destinationBrushRect.empty()) {
+        destinationBrushRect
+          .attr('visibility', 'visible')
+          .attr('x', rightCoords.x0)
+          .attr('y', rightCoords.y0)
+          .attr('width', rightCoords.x1 - rightCoords.x0)
+          .attr('height', rightCoords.y1 - rightCoords.y0);
+      }
+    } else {
+      d3.select('rect.destination-brush-rect').attr('visibility', 'hidden');
+    }
   };
 
   // render visuals with current brush selection for immediate feedback
@@ -2073,89 +2222,208 @@ const DoMi: React.FC = () => {
         );
       // css classes handle styling now for better performance
 
-      // create brush group for multi-selection (before interactive elements)
-      const brushGroup = mapGroup
-        .append('g')
-        .attr('class', 'brush')
-        .style('pointer-events', 'all');
-      mapGroup
-        .append('g')
-        .attr('class', 'remote-brushes')
-        .style('pointer-events', 'none');
+      const bbox = mapGroup.node()?.getBBox();
 
-      const localBrushRect = brushGroup
-        .append('rect')
-        .attr('class', 'local-brush-rect')
-        .attr('pointer-events', 'none')
-        .attr('fill', 'rgba(232, 27, 35, 0.3)')
-        .attr('stroke', userColor)
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '3,3')
-        .attr('visibility', 'hidden');
-
-      const brush = d3
+      // initialize separate brush behaviors for origin and destination
+      const originBrush = d3
         .brush()
-        .on('start', brushStarted)
-        .on('brush', brushed)
-        .on('end', brushEnded);
+        .filter((event) => {
+          // only allow brush when no modifier keys pressed
+          return (
+            event.type === 'mousedown' && !event.shiftKey && !event.ctrlKey
+          );
+        })
+        .on('start', (event) => brushStarted(event, 'origin'))
+        .on('brush', (event) => brushed(event, 'origin'))
+        .on('end', (event) => brushEnded(event, 'origin'));
 
-      brushGroup.call(brush);
+      const destinationBrush = d3
+        .brush()
+        .filter((event) => {
+          // only allow brush when no modifier keys pressed
+          return (
+            event.type === 'mousedown' && !event.shiftKey && !event.ctrlKey
+          );
+        })
+        .on('start', (event) => brushStarted(event, 'destination'))
+        .on('brush', (event) => brushed(event, 'destination'))
+        .on('end', (event) => brushEnded(event, 'destination'));
 
-      function brushStarted() {
+      if (bbox) {
+        const extent: [[number, number], [number, number]] = [
+          [bbox.x, bbox.y],
+          [bbox.x + bbox.width, bbox.y + bbox.height],
+        ];
+        originBrush.extent(extent);
+        destinationBrush.extent(extent);
+      }
+
+      // create brush groups AFTER all map elements (so they appear on top)
+      const brushInteractionGroup = mapGroup
+        .append('g')
+        .attr('class', 'brush-interaction')
+        .style('pointer-events', 'all');
+
+      // store in ref for external access
+      brushInteractionGroupRef.current = brushInteractionGroup;
+
+      // function to switch active brush based on current mode
+      const switchActiveBrush = () => {
         const currentMode = hoverModeRef.current;
-        const targetMap =
+
+        // save current brush selection before switching
+        const currentSelection = d3.brushSelection(
+          brushInteractionGroup.node()!
+        ) as [[number, number], [number, number]] | null;
+        const previousMode =
+          currentMode === 'origin' ? 'destination' : 'origin';
+
+        if (currentSelection && previousMode === 'origin') {
+          originBrushSelection.current = currentSelection;
+        } else if (currentSelection && previousMode === 'destination') {
+          destinationBrushSelection.current = currentSelection;
+        }
+
+        // also load brush selection from yjs if available
+        const coordsArray =
           currentMode === 'origin'
-            ? yClientBrushSelectionsLeft
-            : yClientBrushSelectionsRight;
-        if (targetMap && userId) {
-          targetMap.set(userId, []);
+            ? yClientBrushCoordsLeft
+            : yClientBrushCoordsRight;
+
+        let brushSelectionFromYjs: [[number, number], [number, number]] | null =
+          null;
+        if (coordsArray && coordsArray.has(userId)) {
+          const coords = coordsArray.get(userId)!;
+          brushSelectionFromYjs = [
+            [coords.x0, coords.y0],
+            [coords.x1, coords.y1],
+          ];
+        }
+
+        // remove any existing brush
+        brushInteractionGroup.selectAll('.brush').remove();
+
+        // apply the appropriate brush based on current mode
+        if (currentMode === 'origin') {
+          brushInteractionGroup.call(originBrush);
+          // restore origin brush selection - prioritize yjs, fall back to local ref
+          const selectionToRestore =
+            brushSelectionFromYjs || originBrushSelection.current;
+          if (selectionToRestore) {
+            originBrush.move(brushInteractionGroup, selectionToRestore);
+          }
+        } else {
+          brushInteractionGroup.call(destinationBrush);
+          // restore destination brush selection - prioritize yjs, fall back to local ref
+          const selectionToRestore =
+            brushSelectionFromYjs || destinationBrushSelection.current;
+          if (selectionToRestore) {
+            destinationBrush.move(brushInteractionGroup, selectionToRestore);
+          }
+        }
+
+        // hide the default d3 brush visual elements
+        brushInteractionGroup
+          .select('.selection')
+          .attr('fill', 'none')
+          .attr('stroke', 'none')
+          .attr('stroke-width', 0);
+
+        brushInteractionGroup
+          .selectAll('.handle')
+          .attr('fill', 'none')
+          .attr('stroke', 'none')
+          .attr('stroke-width', 0);
+      };
+
+      // store function in ref for keyboard handler access
+      updateBrushInteractionsRef.current = switchActiveBrush;
+
+      // set initial brush
+      switchActiveBrush();
+
+      // brush event handlers that work with specific brush modes
+      function brushStarted(
+        event: d3.D3BrushEvent<unknown>,
+        brushMode: 'origin' | 'destination'
+      ) {
+        // if the event target is the overlay, it's a new brush.
+        // otherwise, we are resizing or moving an existing brush.
+        if (event.sourceEvent) {
+          const source = event.sourceEvent.target as SVGElement;
+          const isNewBrush = source.classList.contains('overlay');
+
+          if (isNewBrush) {
+            // this is a new brush. clear this user's previous brush selection for this mode only.
+            const targetArray =
+              brushMode === 'origin'
+                ? yClientBrushSelectionsLeft
+                : yClientBrushSelectionsRight;
+
+            if (targetArray && targetArray.has(userId)) {
+              targetArray.set(userId, []);
+            }
+          }
         }
       }
 
-      function brushed(event: d3.D3BrushEvent<unknown>) {
+      function brushed(
+        event: d3.D3BrushEvent<unknown>,
+        brushMode: 'origin' | 'destination'
+      ) {
+        const brushRect =
+          brushMode === 'origin' ? originBrushRect : destinationBrushRect;
+
         if (!event.selection) {
-          localBrushRect.attr('visibility', 'hidden');
-          const currentMode = hoverModeRef.current;
-          const targetMap =
-            currentMode === 'origin'
+          // hide the custom brush rect when no selection
+          brushRect.attr('visibility', 'hidden');
+          // clear this client's brush selection for this mode
+          const targetArray =
+            brushMode === 'origin'
               ? yClientBrushSelectionsLeft
               : yClientBrushSelectionsRight;
-          if (targetMap && userId) {
-            targetMap.set(userId, []);
+
+          if (targetArray && userId) {
+            targetArray.set(userId, []);
           }
           return;
         }
 
+        // get current brush selection
         const [[x0, y0], [x1, y1]] = event.selection as [
           [number, number],
           [number, number]
         ];
 
+        // update cursor position during brush - this prevents cursor from freezing
         if (awareness && event.sourceEvent) {
           const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
           const currentState = awareness.getLocalState() as AwarenessState;
           if (currentState) {
             awareness.setLocalState({
               ...currentState,
-              cursor: { x: svgX, y: svgY },
+              cursor: {
+                x: svgX,
+                y: svgY,
+              },
               brushSelection: {
                 x0,
                 y0,
                 x1,
                 y1,
-                mode: hoverModeRef.current,
+                mode: brushMode,
               },
             });
           }
         }
 
-        const brushMode = hoverModeRef.current;
+        // update the custom brush rectangle
         const brushFillColor =
           brushMode === 'origin'
-            ? 'rgba(232, 27, 35, 0.3)'
-            : 'rgba(0, 174, 243, 0.3)';
+            ? 'rgba(232, 27, 35, 0.3)' // red for origins
+            : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
 
-        localBrushRect
+        brushRect
           .attr('visibility', 'visible')
           .attr('x', x0)
           .attr('y', y0)
@@ -2163,6 +2431,7 @@ const DoMi: React.FC = () => {
           .attr('height', y1 - y0)
           .attr('fill', brushFillColor);
 
+        // find states within the brush selection
         const selectedStates = filteredFeatures.filter((feature) => {
           // get the bounding box of the state's geometry
           const bounds = pathGenerator.bounds(feature);
@@ -2178,75 +2447,225 @@ const DoMi: React.FC = () => {
           return !(brushMissesStateHorizontally || brushMissesStateVertically);
         });
 
+        // update this client's brush selection for this specific mode
+        const oppositeSelectedArray =
+          brushMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
+
+        // filter out states that are already pinned in the opposite side
+        const oppositeSelectedStates = oppositeSelectedArray?.toArray() || [];
         const selectedStateNames = selectedStates
-          .map((f) => f.properties?.name)
+          .map((s) => s.properties?.name)
           .filter(Boolean) as string[];
-
-        const currentMode = hoverModeRef.current;
-        const targetMap =
-          currentMode === 'origin'
-            ? yClientBrushSelectionsLeft
-            : yClientBrushSelectionsRight;
-        const oppositePinnedArray =
-          currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
-
-        const oppositePinned = oppositePinnedArray?.toArray() || [];
         const validSelections = selectedStateNames.filter(
-          (name) => !oppositePinned.includes(name.toUpperCase())
+          (name) => !oppositeSelectedStates.includes(name.toUpperCase())
         );
 
-        if (targetMap && userId) {
-          targetMap.set(
+        const targetArray =
+          brushMode === 'origin'
+            ? yClientBrushSelectionsLeft
+            : yClientBrushSelectionsRight;
+
+        if (targetArray && userId) {
+          targetArray.set(
             userId,
             validSelections.map((s) => s.toUpperCase())
           );
         }
 
-        // trigger visual update during brushing for immediate feedback with current selection
-        const activeBrushMode = hoverModeRef.current;
-        const currentBrushStates = {
-          left:
-            activeBrushMode === 'origin'
-              ? validSelections.map((s) => s.toUpperCase())
-              : [],
-          right:
-            activeBrushMode === 'destination'
-              ? validSelections.map((s) => s.toUpperCase())
-              : [],
-        };
-        renderVisualsWithCurrentBrush(currentBrushStates);
-      }
+        // also save brush coordinates to yjs for visual sync
+        const coordsArray =
+          brushMode === 'origin'
+            ? yClientBrushCoordsLeft
+            : yClientBrushCoordsRight;
 
-      function brushEnded(event: d3.D3BrushEvent<unknown>) {
-        localBrushRect.attr('visibility', 'hidden');
-
-        const currentMode = hoverModeRef.current;
-        const targetMap =
-          currentMode === 'origin'
-            ? yClientBrushSelectionsLeft
-            : yClientBrushSelectionsRight;
-
-        if (targetMap && userId) {
-          targetMap.set(userId, []);
+        if (coordsArray && userId) {
+          coordsArray.set(userId, { x0, y0, x1, y1 });
         }
 
+        // trigger visual update during brushing for immediate feedback with current selection
+        const allBrushLeftStates: string[] = [];
+        yClientBrushSelectionsLeft?.forEach((states) => {
+          allBrushLeftStates.push(...states.map((s) => s.toUpperCase()));
+        });
+
+        const allBrushRightStates: string[] = [];
+        yClientBrushSelectionsRight?.forEach((states) => {
+          allBrushRightStates.push(...states.map((s) => s.toUpperCase()));
+        });
+
+        renderVisualsWithCurrentBrush({
+          left: allBrushLeftStates,
+          right: allBrushRightStates,
+        });
+      }
+
+      function brushEnded(
+        event: d3.D3BrushEvent<unknown>,
+        brushMode: 'origin' | 'destination'
+      ) {
+        const brushRect =
+          brushMode === 'origin' ? originBrushRect : destinationBrushRect;
+
+        // if no selection after brush ends, this means user clicked outside or cleared the brush
+        if (!event.selection) {
+          // hide the custom brush rectangle and clear yjs selection for this mode
+          brushRect.attr('visibility', 'hidden');
+
+          const targetArray =
+            brushMode === 'origin'
+              ? yClientBrushSelectionsLeft
+              : yClientBrushSelectionsRight;
+
+          if (targetArray && userId) {
+            targetArray.set(userId, []);
+          }
+
+          // also clear brush coordinates from yjs
+          const coordsArray =
+            brushMode === 'origin'
+              ? yClientBrushCoordsLeft
+              : yClientBrushCoordsRight;
+
+          if (coordsArray && userId) {
+            coordsArray.delete(userId);
+          }
+        }
+
+        // update cursor position and clear brush selection from awareness
         if (awareness && event.sourceEvent) {
           const [svgX, svgY] = d3.pointer(event.sourceEvent, svg.node());
           const currentState = awareness.getLocalState() as AwarenessState;
           if (currentState) {
             const stateWithoutBrush = {
               ...currentState,
-              cursor: { x: svgX, y: svgY },
+              cursor: {
+                x: svgX,
+                y: svgY,
+              },
             };
             if ('brushSelection' in stateWithoutBrush) {
-              delete (stateWithoutBrush as Partial<AwarenessState>)
-                .brushSelection;
+              delete stateWithoutBrush.brushSelection;
             }
             awareness.setLocalState(stateWithoutBrush);
           }
-          brushGroup.call(brush.move, null);
         }
       }
+
+      // function to update remote brush selections
+      const updateRemoteBrushes = () => {
+        if (!awareness || !yClientBrushCoordsLeft || !yClientBrushCoordsRight)
+          return;
+
+        // get remote users' persistent brush coordinates from yjs
+        const remoteBrushData: Array<{
+          userId: string;
+          coords: { x0: number; y0: number; x1: number; y1: number };
+          mode: 'origin' | 'destination';
+          userColor: string;
+        }> = [];
+
+        // get user colors from awareness
+        const userStates = Array.from(awareness.getStates().values());
+        const userColorMap = new Map<string, string>();
+        userStates.forEach((state) => {
+          const awarenessState = state as AwarenessState;
+          if (awarenessState && awarenessState.user) {
+            userColorMap.set(awarenessState.user.id, awarenessState.user.color);
+          }
+        });
+
+        // collect origin brushes
+        yClientBrushCoordsLeft.forEach((coords, userIdKey) => {
+          if (userIdKey !== userId) {
+            // exclude local user
+            const userColor = userColorMap.get(userIdKey) || '#999';
+            remoteBrushData.push({
+              userId: userIdKey,
+              coords,
+              mode: 'origin',
+              userColor,
+            });
+          }
+        });
+
+        // collect destination brushes
+        yClientBrushCoordsRight.forEach((coords, userIdKey) => {
+          if (userIdKey !== userId) {
+            // exclude local user
+            const userColor = userColorMap.get(userIdKey) || '#999';
+            remoteBrushData.push({
+              userId: userIdKey,
+              coords,
+              mode: 'destination',
+              userColor,
+            });
+          }
+        });
+
+        // also include temporary brushes from awareness (while actively brushing)
+        const tempBrushStates = userStates
+          .map((state) => state as AwarenessState)
+          .filter(
+            (state) =>
+              state &&
+              state.brushSelection &&
+              state.user &&
+              state.user.id !== userId
+          );
+
+        tempBrushStates.forEach((state) => {
+          const coords = {
+            x0: state.brushSelection!.x0,
+            y0: state.brushSelection!.y0,
+            x1: state.brushSelection!.x1,
+            y1: state.brushSelection!.y1,
+          };
+          remoteBrushData.push({
+            userId: state.user.id,
+            coords,
+            mode: state.brushSelection!.mode,
+            userColor: state.user.color,
+          });
+        });
+
+        // update remote brush visualizations
+        const remoteBrushesGroup = mapGroup.select('g.remote-brushes');
+
+        const brushes = remoteBrushesGroup
+          .selectAll<SVGRectElement, (typeof remoteBrushData)[0]>(
+            'rect.remote-brush'
+          )
+          .data(remoteBrushData, (d) => `${d.userId}-${d.mode}`);
+
+        // remove brushes for users who left or cleared their brush
+        brushes.exit().remove();
+
+        // create new brushes for new users
+        const newBrushes = brushes
+          .enter()
+          .append('rect')
+          .attr('class', 'remote-brush')
+          .attr('pointer-events', 'none')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '3,3');
+
+        // update all brushes (existing + new)
+        newBrushes
+          .merge(brushes)
+          .attr('x', (d) => d.coords.x0)
+          .attr('y', (d) => d.coords.y0)
+          .attr('width', (d) => d.coords.x1 - d.coords.x0)
+          .attr('height', (d) => d.coords.y1 - d.coords.y0)
+          .attr('fill', (d) => {
+            return d.mode === 'origin'
+              ? 'rgba(232, 27, 35, 0.3)'
+              : 'rgba(0, 174, 243, 0.3)';
+          })
+          .attr('stroke', (d) => d.userColor);
+      };
+
+      // store function in ref for external access
+      updateRemoteBrushesRef.current = updateRemoteBrushes;
 
       // create interactive states group AFTER brush (on top with pointer-events)
       const statesGroup = mapGroup
@@ -2462,6 +2881,37 @@ const DoMi: React.FC = () => {
             : ''
         );
 
+      const brushVisualsGroup = mapGroup
+        .append('g')
+        .attr('class', 'brush-visuals')
+        .style('pointer-events', 'none');
+
+      mapGroup
+        .append('g')
+        .attr('class', 'remote-brushes')
+        .style('pointer-events', 'none');
+
+      // create separate custom brush rectangles for each mode
+      const originBrushRect = brushVisualsGroup
+        .append('rect')
+        .attr('class', 'origin-brush-rect')
+        .attr('pointer-events', 'none')
+        .attr('fill', 'rgba(232, 27, 35, 0.3)') // red for origins
+        .attr('stroke', userColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3')
+        .attr('visibility', 'hidden');
+
+      const destinationBrushRect = brushVisualsGroup
+        .append('rect')
+        .attr('class', 'destination-brush-rect')
+        .attr('pointer-events', 'none')
+        .attr('fill', 'rgba(0, 174, 243, 0.3)') // blue for destinations
+        .attr('stroke', userColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3')
+        .attr('visibility', 'hidden');
+
       isInitializedRef.current = true;
       renderVisuals();
 
@@ -2479,6 +2929,8 @@ const DoMi: React.FC = () => {
     yTotalMigrationValue?.observe(visualObserver);
     yClientBrushSelectionsLeft?.observeDeep(visualObserver);
     yClientBrushSelectionsRight?.observeDeep(visualObserver);
+    yClientBrushCoordsLeft?.observeDeep(visualObserver);
+    yClientBrushCoordsRight?.observeDeep(visualObserver);
 
     const updateCursors = () => {
       if (!awareness || !cursorOverlayRef.current) return;
@@ -2577,83 +3029,21 @@ const DoMi: React.FC = () => {
         });
     };
 
-    const updateRemoteBrushes = () => {
-      if (!awareness) return;
-
-      const brushStates = Array.from(awareness.getStates().entries())
-        .map(([clientId, state]) => ({
-          clientId,
-          state: state as AwarenessState,
-          isLocal:
-            state &&
-            (state as AwarenessState).user &&
-            (state as AwarenessState).user.id === userId,
-        }))
-        .filter(
-          (item) =>
-            item.state &&
-            item.state.brushSelection &&
-            item.state.user &&
-            !item.isLocal
-        );
-
-      const remoteBrushesGroup = d3
-        .select(gRef.current)
-        .select('g.remote-brushes');
-
-      const brushes = remoteBrushesGroup
-        .selectAll<
-          SVGRectElement,
-          { clientId: number; state: AwarenessState; isLocal: boolean }
-        >('rect.remote-brush')
-        .data(brushStates, (d) => d.clientId.toString());
-
-      brushes.exit().remove();
-
-      const newBrushes = brushes
-        .enter()
-        .append('rect')
-        .attr('class', 'remote-brush')
-        .attr('pointer-events', 'none')
-        .attr('fill', (d) => {
-          const mode = d.state.brushSelection!.mode;
-          return mode === 'origin'
-            ? 'rgba(232, 27, 35, 0.3)'
-            : 'rgba(0, 174, 243, 0.3)';
-        })
-        .attr('stroke', (d) => d.state.user.color)
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '3,3');
-
-      newBrushes
-        .merge(brushes)
-        .attr('x', (d) => d.state.brushSelection!.x0)
-        .attr('y', (d) => d.state.brushSelection!.y0)
-        .attr(
-          'width',
-          (d) => d.state.brushSelection!.x1 - d.state.brushSelection!.x0
-        )
-        .attr(
-          'height',
-          (d) => d.state.brushSelection!.y1 - d.state.brushSelection!.y0
-        )
-        .attr('fill', (d) => {
-          const mode = d.state.brushSelection!.mode;
-          return mode === 'origin'
-            ? 'rgba(232, 27, 35, 0.3)'
-            : 'rgba(0, 174, 243, 0.3)';
-        });
-    };
+    // updateRemoteBrushes function is now defined within the map initialization
 
     const awarenessObserver = () => {
       updateCursors();
-      updateRemoteBrushes();
+      if (updateRemoteBrushesRef.current) {
+        updateRemoteBrushesRef.current();
+      }
     };
     if (awareness) {
       awareness.on('change', awarenessObserver);
     }
     updateCursors();
-    updateRemoteBrushes();
+    if (updateRemoteBrushesRef.current) {
+      updateRemoteBrushesRef.current();
+    }
 
     svg.on('mousemove', function (event) {
       if (!awareness) return;
@@ -2687,6 +3077,8 @@ const DoMi: React.FC = () => {
       yTotalMigrationValue?.unobserve(visualObserver);
       yClientBrushSelectionsLeft?.unobserveDeep(visualObserver);
       yClientBrushSelectionsRight?.unobserveDeep(visualObserver);
+      yClientBrushCoordsLeft?.unobserveDeep(visualObserver);
+      yClientBrushCoordsRight?.unobserveDeep(visualObserver);
       if (awareness) {
         awareness.off('change', awarenessObserver);
       }
@@ -2714,6 +3106,8 @@ const DoMi: React.FC = () => {
     migrationDataLoaded,
     yClientBrushSelectionsLeft,
     yClientBrushSelectionsRight,
+    yClientBrushCoordsLeft,
+    yClientBrushCoordsRight,
     awareness,
     userId,
   ]);
