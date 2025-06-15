@@ -179,6 +179,14 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
   const panelSvgRef = useRef<SVGSVGElement>(null); // ref for the info panel svg
   const animationFrameRef = useRef<number | null>(null);
   const activeLinesByPair = useRef<Map<string, SVGPathElement>>(new Map());
+  const updateBrushInteractionsRef = useRef<(() => void) | null>(null);
+  // refs to store brush selection state for each mode
+  const originBrushSelection = useRef<
+    [[number, number], [number, number]] | null
+  >(null);
+  const destinationBrushSelection = useRef<
+    [[number, number], [number, number]] | null
+  >(null);
 
   // get doc from yjs context
   const yjsContext = useContext(YjsContext);
@@ -210,6 +218,20 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
   const yClientBrushSelectionsRight = doc?.getMap<string[]>(
     'worldMapClientBrushSelectionsRight'
   );
+
+  // add brush coordinates map - maps userId to brush selection coordinates
+  const yClientBrushCoordsLeft = doc?.getMap<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }>('worldMapClientBrushCoordsLeft');
+  const yClientBrushCoordsRight = doc?.getMap<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }>('worldMapClientBrushCoordsRight');
 
   // user state management
   const [userId] = useState<string>(() => crypto.randomUUID());
@@ -514,6 +536,11 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         hoverModeRef.current =
           hoverModeRef.current === 'origin' ? 'destination' : 'origin';
         updateModeIndicator();
+
+        // update brush interactions based on new mode
+        if (updateBrushInteractionsRef.current) {
+          updateBrushInteractionsRef.current();
+        }
       }
     };
 
@@ -2155,11 +2182,17 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .append('title')
           .text((d) => d.properties?.name ?? 'unknown');
 
-        // create brush group for multi-selection
-        const brushGroup = g
+        // create single brush interaction group
+        const brushInteractionGroup = g
           .append('g')
-          .attr('class', 'brush')
+          .attr('class', 'brush-interaction')
           .style('pointer-events', 'all');
+
+        // create brush visuals group for rendering above airports
+        const brushVisualsGroup = g
+          .append('g')
+          .attr('class', 'brush-visuals')
+          .style('pointer-events', 'none');
 
         // create remote brushes group for showing other users' brush selections
         const remoteBrushesGroup = g
@@ -2167,20 +2200,31 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .attr('class', 'remote-brushes')
           .style('pointer-events', 'none');
 
-        // create custom local brush element (hidden initially)
-        const localBrushRect = brushGroup
+        // create separate custom brush rectangles for each mode
+        const originBrushRect = brushVisualsGroup
           .append('rect')
-          .attr('class', 'local-brush-rect')
+          .attr('class', 'origin-brush-rect')
           .attr('pointer-events', 'none')
-          .attr('fill', 'rgba(232, 27, 35, 0.3)') // default to origins color
+          .attr('fill', 'rgba(232, 27, 35, 0.3)') // red for origins
           .attr('stroke', userColor)
           .attr('stroke-width', 2)
           .attr('stroke-dasharray', '3,3')
-          .attr('visibility', 'hidden'); // hidden by default
+          .attr('visibility', 'hidden');
+
+        const destinationBrushRect = brushVisualsGroup
+          .append('rect')
+          .attr('class', 'destination-brush-rect')
+          .attr('pointer-events', 'none')
+          .attr('fill', 'rgba(0, 174, 243, 0.3)') // blue for destinations
+          .attr('stroke', userColor)
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '3,3')
+          .attr('visibility', 'hidden');
 
         const bbox = g.node()?.getBBox();
-        // initialize brush behavior
-        const brush = d3
+
+        // initialize separate brush behaviors for origin and destination
+        const originBrush = d3
           .brush()
           .filter((event) => {
             // only allow brush when no modifier keys pressed
@@ -2188,53 +2232,145 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
               event.type === 'mousedown' && !event.shiftKey && !event.ctrlKey
             );
           })
-          .on('start', brushStarted)
-          .on('brush', brushed)
-          .on('end', brushEnded);
+          .on('start', (event) => brushStarted(event, 'origin'))
+          .on('brush', (event) => brushed(event, 'origin'))
+          .on('end', (event) => brushEnded(event, 'origin'));
+
+        const destinationBrush = d3
+          .brush()
+          .filter((event) => {
+            // only allow brush when no modifier keys pressed
+            return (
+              event.type === 'mousedown' && !event.shiftKey && !event.ctrlKey
+            );
+          })
+          .on('start', (event) => brushStarted(event, 'destination'))
+          .on('brush', (event) => brushed(event, 'destination'))
+          .on('end', (event) => brushEnded(event, 'destination'));
+
         if (bbox) {
-          brush.extent([
+          const extent: [[number, number], [number, number]] = [
             [bbox.x, bbox.y],
             [bbox.x + bbox.width, bbox.y + bbox.height],
-          ]);
+          ];
+          originBrush.extent(extent);
+          destinationBrush.extent(extent);
         }
-        // apply brush to the group
-        brushGroup.call(brush);
 
-        // hide the default d3 brush visual elements
-        brushGroup
-          .select('.selection')
-          .attr('fill', 'none')
-          .attr('stroke', 'none')
-          .attr('stroke-width', 0);
-
-        brushGroup
-          .selectAll('.handle')
-          .attr('fill', 'none')
-          .attr('stroke', 'none')
-          .attr('stroke-width', 0);
-
-        // brush event handlers
-        function brushStarted() {
-          // clear only this client's brush selection for current mode
+        // function to switch active brush based on current mode
+        const switchActiveBrush = () => {
           const currentMode = hoverModeRef.current;
-          const targetArray =
-            currentMode === 'origin'
-              ? yClientBrushSelectionsLeft
-              : yClientBrushSelectionsRight;
 
-          if (targetArray && userId) {
-            targetArray.set(userId, []);
+          // save current brush selection before switching
+          const currentSelection = d3.brushSelection(
+            brushInteractionGroup.node()!
+          ) as [[number, number], [number, number]] | null;
+          const previousMode =
+            currentMode === 'origin' ? 'destination' : 'origin';
+
+          if (currentSelection && previousMode === 'origin') {
+            originBrushSelection.current = currentSelection;
+          } else if (currentSelection && previousMode === 'destination') {
+            destinationBrushSelection.current = currentSelection;
+          }
+
+          // also load brush selection from yjs if available
+          const coordsArray =
+            currentMode === 'origin'
+              ? yClientBrushCoordsLeft
+              : yClientBrushCoordsRight;
+
+          let brushSelectionFromYjs:
+            | [[number, number], [number, number]]
+            | null = null;
+          if (coordsArray && coordsArray.has(userId)) {
+            const coords = coordsArray.get(userId)!;
+            brushSelectionFromYjs = [
+              [coords.x0, coords.y0],
+              [coords.x1, coords.y1],
+            ];
+          }
+
+          // remove any existing brush
+          brushInteractionGroup.selectAll('.brush').remove();
+
+          // apply the appropriate brush based on current mode
+          if (currentMode === 'origin') {
+            brushInteractionGroup.call(originBrush);
+            // restore origin brush selection - prioritize yjs, fall back to local ref
+            const selectionToRestore =
+              brushSelectionFromYjs || originBrushSelection.current;
+            if (selectionToRestore) {
+              originBrush.move(brushInteractionGroup, selectionToRestore);
+            }
+          } else {
+            brushInteractionGroup.call(destinationBrush);
+            // restore destination brush selection - prioritize yjs, fall back to local ref
+            const selectionToRestore =
+              brushSelectionFromYjs || destinationBrushSelection.current;
+            if (selectionToRestore) {
+              destinationBrush.move(brushInteractionGroup, selectionToRestore);
+            }
+          }
+
+          // hide the default d3 brush visual elements
+          brushInteractionGroup
+            .select('.selection')
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0);
+
+          brushInteractionGroup
+            .selectAll('.handle')
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0);
+        };
+
+        // store function in ref for keyboard handler access
+        updateBrushInteractionsRef.current = switchActiveBrush;
+
+        // set initial brush
+        switchActiveBrush();
+
+        // brush event handlers that work with specific brush modes
+        function brushStarted(
+          event: d3.D3BrushEvent<unknown>,
+          brushMode: 'origin' | 'destination'
+        ) {
+          // if the event target is the overlay, it's a new brush.
+          // otherwise, we are resizing or moving an existing brush.
+          if (event.sourceEvent) {
+            const source = event.sourceEvent.target as SVGElement;
+            const isNewBrush = source.classList.contains('overlay');
+
+            if (isNewBrush) {
+              // this is a new brush. clear this user's previous brush selection for this mode only.
+              const targetArray =
+                brushMode === 'origin'
+                  ? yClientBrushSelectionsLeft
+                  : yClientBrushSelectionsRight;
+
+              if (targetArray && targetArray.has(userId)) {
+                targetArray.set(userId, []);
+              }
+            }
           }
         }
 
-        function brushed(event: d3.D3BrushEvent<unknown>) {
+        function brushed(
+          event: d3.D3BrushEvent<unknown>,
+          brushMode: 'origin' | 'destination'
+        ) {
+          const brushRect =
+            brushMode === 'origin' ? originBrushRect : destinationBrushRect;
+
           if (!event.selection) {
             // hide the custom brush rect when no selection
-            localBrushRect.attr('visibility', 'hidden');
-            // clear this client's brush selection
-            const currentMode = hoverModeRef.current;
+            brushRect.attr('visibility', 'hidden');
+            // clear this client's brush selection for this mode
             const targetArray =
-              currentMode === 'origin'
+              brushMode === 'origin'
                 ? yClientBrushSelectionsLeft
                 : yClientBrushSelectionsRight;
 
@@ -2266,20 +2402,19 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
                   y0,
                   x1,
                   y1,
-                  mode: hoverModeRef.current,
+                  mode: brushMode,
                 },
               });
             }
           }
 
-          // update the custom brush rectangle to exactly match remote brushes
-          const brushMode = hoverModeRef.current;
+          // update the custom brush rectangle
           const brushFillColor =
             brushMode === 'origin'
               ? 'rgba(232, 27, 35, 0.3)' // red for origins
               : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
 
-          localBrushRect
+          brushRect
             .attr('visibility', 'visible')
             .attr('x', x0)
             .attr('y', y0)
@@ -2288,7 +2423,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .attr('fill', brushFillColor);
 
           // find airports within the brush selection
-          // brush coordinates and airport coordinates are in same transformed space
           const selectedAirports = allAirports.current.filter((airport) => {
             const coords = projection([airport.Longitude, airport.Latitude]);
             if (!coords) return false;
@@ -2296,10 +2430,9 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             return px >= x0 && px <= x1 && py >= y0 && py <= y1;
           });
 
-          // update this client's brush selection based on current mode
-          const currentMode = hoverModeRef.current;
+          // update this client's brush selection for this specific mode
           const oppositeSelectedArray =
-            currentMode === 'origin'
+            brushMode === 'origin'
               ? ySelectedAirportIATAsRight
               : ySelectedAirportIATAsLeft;
 
@@ -2310,41 +2443,55 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .filter((iata) => !oppositeSelectedIATAs.includes(iata));
 
           const targetArray =
-            currentMode === 'origin'
+            brushMode === 'origin'
               ? yClientBrushSelectionsLeft
               : yClientBrushSelectionsRight;
 
-          console.log(
-            `[brush] mode: ${currentMode}, selected ${selectedIATAs.length} airports:`,
-            selectedIATAs
-          );
-
           if (targetArray && userId) {
-            console.log(
-              `[brush] setting brush selection for user ${userId} in ${currentMode} mode`
-            );
             targetArray.set(userId, selectedIATAs);
-          } else {
-            console.log('[brush] targetArray or userId is null', {
-              targetArray,
-              userId,
-            });
+          }
+
+          // also save brush coordinates to yjs for visual sync
+          const coordsArray =
+            brushMode === 'origin'
+              ? yClientBrushCoordsLeft
+              : yClientBrushCoordsRight;
+
+          if (coordsArray && userId) {
+            coordsArray.set(userId, { x0, y0, x1, y1 });
           }
         }
 
-        function brushEnded(event: d3.D3BrushEvent<unknown>) {
-          // hide the custom brush rectangle
-          localBrushRect.attr('visibility', 'hidden');
+        function brushEnded(
+          event: d3.D3BrushEvent<unknown>,
+          brushMode: 'origin' | 'destination'
+        ) {
+          const brushRect =
+            brushMode === 'origin' ? originBrushRect : destinationBrushRect;
 
-          // clear this client's brush selection immediately
-          const currentMode = hoverModeRef.current;
-          const targetArray =
-            currentMode === 'origin'
-              ? yClientBrushSelectionsLeft
-              : yClientBrushSelectionsRight;
+          // if no selection after brush ends, this means user clicked outside or cleared the brush
+          if (!event.selection) {
+            // hide the custom brush rectangle and clear yjs selection for this mode
+            brushRect.attr('visibility', 'hidden');
 
-          if (targetArray && userId) {
-            targetArray.set(userId, []);
+            const targetArray =
+              brushMode === 'origin'
+                ? yClientBrushSelectionsLeft
+                : yClientBrushSelectionsRight;
+
+            if (targetArray && userId) {
+              targetArray.set(userId, []);
+            }
+
+            // also clear brush coordinates from yjs
+            const coordsArray =
+              brushMode === 'origin'
+                ? yClientBrushCoordsLeft
+                : yClientBrushCoordsRight;
+
+            if (coordsArray && userId) {
+              coordsArray.delete(userId);
+            }
           }
 
           // update cursor position and clear brush selection from awareness
@@ -2364,38 +2511,95 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
               }
               awareness.setLocalState(stateWithoutBrush);
             }
-            brushGroup.call(brush.move, null);
           }
         }
 
         // function to update remote brush selections
         const updateRemoteBrushes = () => {
-          if (!awareness) return;
+          if (!awareness || !yClientBrushCoordsLeft || !yClientBrushCoordsRight)
+            return;
 
-          const brushStates = Array.from(awareness.getStates().entries())
-            .map(([clientId, state]) => ({
-              clientId,
-              state: state as AwarenessState,
-              isLocal:
-                state &&
-                (state as AwarenessState).user &&
-                (state as AwarenessState).user.id === userId,
-            }))
+          // get remote users' persistent brush coordinates from yjs
+          const remoteBrushData: Array<{
+            userId: string;
+            coords: { x0: number; y0: number; x1: number; y1: number };
+            mode: 'origin' | 'destination';
+            userColor: string;
+          }> = [];
+
+          // get user colors from awareness
+          const userStates = Array.from(awareness.getStates().values());
+          const userColorMap = new Map<string, string>();
+          userStates.forEach((state) => {
+            const awarenessState = state as AwarenessState;
+            if (awarenessState && awarenessState.user) {
+              userColorMap.set(
+                awarenessState.user.id,
+                awarenessState.user.color
+              );
+            }
+          });
+
+          // collect origin brushes
+          yClientBrushCoordsLeft.forEach((coords, userIdKey) => {
+            if (userIdKey !== userId) {
+              // exclude local user
+              const userColor = userColorMap.get(userIdKey) || '#999';
+              remoteBrushData.push({
+                userId: userIdKey,
+                coords,
+                mode: 'origin',
+                userColor,
+              });
+            }
+          });
+
+          // collect destination brushes
+          yClientBrushCoordsRight.forEach((coords, userIdKey) => {
+            if (userIdKey !== userId) {
+              // exclude local user
+              const userColor = userColorMap.get(userIdKey) || '#999';
+              remoteBrushData.push({
+                userId: userIdKey,
+                coords,
+                mode: 'destination',
+                userColor,
+              });
+            }
+          });
+
+          // also include temporary brushes from awareness (while actively brushing)
+          const tempBrushStates = userStates
+            .map((state) => state as AwarenessState)
             .filter(
-              (item) =>
-                item.state &&
-                item.state.brushSelection &&
-                item.state.user &&
-                !item.isLocal
-            ); // only remote brushes
+              (state) =>
+                state &&
+                state.brushSelection &&
+                state.user &&
+                state.user.id !== userId
+            );
+
+          tempBrushStates.forEach((state) => {
+            const coords = {
+              x0: state.brushSelection!.x0,
+              y0: state.brushSelection!.y0,
+              x1: state.brushSelection!.x1,
+              y1: state.brushSelection!.y1,
+            };
+            remoteBrushData.push({
+              userId: `temp-${state.user.id}`,
+              coords,
+              mode: state.brushSelection!.mode,
+              userColor: state.user.color,
+            });
+          });
 
           // update brush visualization
           const brushes = remoteBrushesGroup
-            .selectAll<
-              SVGRectElement,
-              { clientId: number; state: AwarenessState; isLocal: boolean }
-            >('rect.remote-brush')
-            .data(brushStates, (d) => d.clientId.toString());
+            .selectAll<SVGRectElement, (typeof remoteBrushData)[0]>(
+              'rect.remote-brush'
+            )
+            .data(remoteBrushData, (d) => d.userId);
 
           // remove old brushes
           brushes.exit().remove();
@@ -2407,36 +2611,27 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
             .attr('class', 'remote-brush')
             .attr('pointer-events', 'none')
             .attr('fill', (d) => {
-              // use mode-based color for fill
-              const mode = d.state.brushSelection!.mode;
-              return mode === 'origin'
+              return d.mode === 'origin'
                 ? 'rgba(232, 27, 35, 0.3)' // red for origins
                 : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
             })
-            .attr('stroke', (d) => d.state.user.color) // keep user color for stroke
+            .attr('stroke', (d) => d.userColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '3,3');
 
           // update all brushes
           newBrushes
             .merge(brushes)
-            .attr('x', (d) => d.state.brushSelection!.x0)
-            .attr('y', (d) => d.state.brushSelection!.y0)
-            .attr(
-              'width',
-              (d) => d.state.brushSelection!.x1 - d.state.brushSelection!.x0
-            )
-            .attr(
-              'height',
-              (d) => d.state.brushSelection!.y1 - d.state.brushSelection!.y0
-            )
+            .attr('x', (d) => d.coords.x0)
+            .attr('y', (d) => d.coords.y0)
+            .attr('width', (d) => d.coords.x1 - d.coords.x0)
+            .attr('height', (d) => d.coords.y1 - d.coords.y0)
             .attr('fill', (d) => {
-              // update fill color based on mode
-              const mode = d.state.brushSelection!.mode;
-              return mode === 'origin'
+              return d.mode === 'origin'
                 ? 'rgba(232, 27, 35, 0.3)' // red for origins
                 : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
-            });
+            })
+            .attr('stroke', (d) => d.userColor);
         };
 
         const airportsGroup = g
@@ -2444,6 +2639,10 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .attr('class', 'airports')
           .style('pointer-events', 'all')
           .style('filter', 'url(#airport-shadow)');
+
+        // move brush visual groups after airports so they render on top
+        brushVisualsGroup.raise();
+        remoteBrushesGroup.raise();
 
         const airportCircles = airportsGroup
           .selectAll('circle')
@@ -2670,6 +2869,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     ySelectedFlights?.observeDeep(yjsObserver); // observe selected flights changes
     yClientBrushSelectionsLeft?.observeDeep(yjsObserver); // observe brush selections changes
     yClientBrushSelectionsRight?.observeDeep(yjsObserver); // observe brush selections changes
+    yClientBrushCoordsLeft?.observeDeep(yjsObserver); // observe brush coordinates changes
+    yClientBrushCoordsRight?.observeDeep(yjsObserver); // observe brush coordinates changes
 
     // main effect cleanup
     return () => {
@@ -2685,6 +2886,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       ySelectedFlights?.unobserveDeep(yjsObserver); // unobserve selected flights changes
       yClientBrushSelectionsLeft?.unobserveDeep(yjsObserver); // unobserve brush selections changes
       yClientBrushSelectionsRight?.unobserveDeep(yjsObserver); // unobserve brush selections changes
+      yClientBrushCoordsLeft?.unobserveDeep(yjsObserver); // unobserve brush coordinates changes
+      yClientBrushCoordsRight?.unobserveDeep(yjsObserver); // unobserve brush coordinates changes
 
       // cleanup scroll drag state
       scrollDragStateRef.current.left.active = false;
