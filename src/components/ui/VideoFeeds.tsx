@@ -3,14 +3,20 @@ import { useWebRTC } from '../../hooks/useWebRTC';
 
 interface VideoFeedsProps {
   roomId: string;
+  layout?: 'horizontal' | 'vertical'; // add layout prop with default vertical
 }
 
 // simplified styles
 const styles = {
   videoContainer: {
     display: 'flex',
-    flexDirection: 'column' as const,
     gap: '0px',
+  },
+  videoContainerVertical: {
+    flexDirection: 'column' as const,
+  },
+  videoContainerHorizontal: {
+    flexDirection: 'row' as const,
   },
   videoItem: {
     width: '240px',
@@ -62,7 +68,10 @@ const VideoFeed: React.FC<{ stream: MediaStream; isMuted: boolean }> = ({
 };
 
 // main component to display video feeds
-const VideoFeeds: React.FC<VideoFeedsProps> = ({ roomId }) => {
+const VideoFeeds: React.FC<VideoFeedsProps> = ({
+  roomId,
+  layout = 'vertical',
+}) => {
   // use the WebRTC hook
   const { localStream, peerStreams, isConnected, startLocalVideo } =
     useWebRTC(roomId);
@@ -78,8 +87,16 @@ const VideoFeeds: React.FC<VideoFeedsProps> = ({ roomId }) => {
   const firstPeerStream =
     peerStreams.size > 0 ? Array.from(peerStreams.values())[0] : null;
 
+  // determine container style based on layout prop
+  const containerStyle = {
+    ...styles.videoContainer,
+    ...(layout === 'horizontal'
+      ? styles.videoContainerHorizontal
+      : styles.videoContainerVertical),
+  };
+
   return (
-    <div style={styles.videoContainer}>
+    <div style={containerStyle}>
       {/* local video */}
       {localStream && (
         <div style={{ ...styles.videoItem, ...styles.localVideo }}>

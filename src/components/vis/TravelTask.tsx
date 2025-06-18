@@ -262,6 +262,9 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
     y: 0,
   });
 
+  // ref to track connected users for cleanup when they leave
+  const connectedUsersRef = useRef<Set<string>>(new Set());
+
   // track current d3 transform for zoom/pan (similar to SenateVisualization)
   const [currentTransform, setCurrentTransform] = useState<d3.ZoomTransform>(
     d3.zoomIdentity
@@ -2196,8 +2199,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .attr('pointer-events', 'none')
           .attr('fill', 'rgba(232, 27, 35, 0.3)') // red for origins
           .attr('stroke', userColor)
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '3,3')
+          .attr('stroke-width', 4)
+          .attr('stroke-dasharray', '8,4')
           .attr('visibility', 'hidden');
 
         const destinationBrushRect = brushVisualsGroup
@@ -2206,8 +2209,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           .attr('pointer-events', 'none')
           .attr('fill', 'rgba(0, 174, 243, 0.3)') // blue for destinations
           .attr('stroke', userColor)
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '3,3')
+          .attr('stroke-width', 4)
+          .attr('stroke-dasharray', '8,4')
           .attr('visibility', 'hidden');
 
         const bbox = g.node()?.getBBox();
@@ -2623,8 +2626,8 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
                 : 'rgba(0, 174, 243, 0.3)'; // blue for destinations
             })
             .attr('stroke', (d) => d.userColor)
-            .attr('stroke-width', 2)
-            .attr('stroke-dasharray', '3,3');
+            .attr('stroke-width', 4)
+            .attr('stroke-dasharray', '8,4');
 
           // update all brushes
           newBrushes
@@ -2780,8 +2783,57 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
           }
         });
 
+        // function to clean up brushes for users who have left
+        const cleanupUserBrushes = (disconnectedUserIds: string[]) => {
+          if (!doc || disconnectedUserIds.length === 0) return;
+
+          doc.transact(() => {
+            disconnectedUserIds.forEach((userId) => {
+              // clean up left side brush selections and coordinates
+              if (yClientBrushSelectionsLeft?.has(userId)) {
+                yClientBrushSelectionsLeft.delete(userId);
+              }
+              if (yClientBrushCoordsLeft?.has(userId)) {
+                yClientBrushCoordsLeft.delete(userId);
+              }
+
+              // clean up right side brush selections and coordinates
+              if (yClientBrushSelectionsRight?.has(userId)) {
+                yClientBrushSelectionsRight.delete(userId);
+              }
+              if (yClientBrushCoordsRight?.has(userId)) {
+                yClientBrushCoordsRight.delete(userId);
+              }
+            });
+          }, 'cleanup-disconnected-user-brushes');
+        };
+
         // add awareness observer for cursor and brush updates
         const awarenessObserver = () => {
+          // get current connected users
+          const currentUsers = new Set<string>();
+          if (awareness) {
+            Array.from(awareness.getStates().values()).forEach((state) => {
+              const awarenessState = state as AwarenessState;
+              if (awarenessState?.user?.id) {
+                currentUsers.add(awarenessState.user.id);
+              }
+            });
+          }
+
+          // find users who have disconnected
+          const disconnectedUsers = Array.from(
+            connectedUsersRef.current
+          ).filter((userId) => !currentUsers.has(userId));
+
+          // clean up brushes for disconnected users
+          if (disconnectedUsers.length > 0) {
+            cleanupUserBrushes(disconnectedUsers);
+          }
+
+          // update the connected users ref
+          connectedUsersRef.current = currentUsers;
+
           updateCursors();
           updateRemoteBrushes();
         };
@@ -2861,7 +2913,6 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
         !yHoveredAirportIATAsRight
       )
         return;
-      console.log('[yjs observer] updating visualization due to yjs change');
       adjustStylesForTransform(transformRef.current.k); // re-apply styles based on current known scale
       redrawAllLinesFromYjs(currentProj);
       updateInfoPanelFromYjs();

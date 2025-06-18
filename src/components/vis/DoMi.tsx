@@ -513,6 +513,9 @@ const DoMi: React.FC = () => {
     y: 0,
   });
 
+  // ref to track connected users for cleanup when they leave
+  const connectedUsersRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!doc) return;
     const timeout = setTimeout(() => {
@@ -766,7 +769,7 @@ const DoMi: React.FC = () => {
       ([stateName, centroid]) => {
         nodes[stateName] = {
           x: centroid[0] + mapLeftOffset,
-          y: centroid[1] - totalHeight * 0.1,
+          y: centroid[1] + totalHeight * 0.05,
         };
       }
     );
@@ -1063,19 +1066,18 @@ const DoMi: React.FC = () => {
         currentViewTypeRef.current
       ];
 
-    // calculate global min/max values including both bundled paths AND active links for proper scaling
+    // calculate scaling values ONLY from bundled paths to maintain consistent line widths
     const bundledValues = Array.from(currentEraBundledPaths.values()).map(
       (data) => data.value
     );
-    const activeLinkValues = activeMigrationLinks.map((link) => link.value);
-    const allScalingValues = [...bundledValues, ...activeLinkValues];
 
-    const globalMaxValue = Math.max(...allScalingValues);
-    const globalMinValue = Math.min(...allScalingValues);
+    const bundledMaxValue = Math.max(...bundledValues);
+    const bundledMinValue = Math.min(...bundledValues);
     const minStrokeWidth = 2;
     const maxStrokeWidth = 12;
 
     // performance optimization: use css classes for line state changes
+    // reset all bundled lines to their original scaling (based only on bundled path values)
     bundledLinesGroup
       .selectAll('path.bundled-migration-line')
       .each(function () {
@@ -1083,18 +1085,16 @@ const DoMi: React.FC = () => {
         const value = Number(element.attr('data-value'));
         const originalGradientId = element.attr('data-gradient-id');
 
-        // recalculate linear stroke width for reset using global values with proper bounds
+        // calculate stroke width using only bundled path scaling (unchanged from original)
         let strokeWidth: number;
-        let normalizedValue: number;
-        if (globalMaxValue === globalMinValue) {
+        if (bundledMaxValue === bundledMinValue) {
           strokeWidth = maxStrokeWidth;
-          normalizedValue = 1;
         } else {
-          normalizedValue = Math.max(
+          const normalizedValue = Math.max(
             0,
             Math.min(
               1,
-              (value - globalMinValue) / (globalMaxValue - globalMinValue)
+              (value - bundledMinValue) / (bundledMaxValue - bundledMinValue)
             )
           );
           strokeWidth =
@@ -1127,18 +1127,17 @@ const DoMi: React.FC = () => {
       top5Links.forEach((link) => {
         const pairKey = getPairKey(link.origin, link.destination);
 
-        // calculate much thicker highlighted line width
+        // calculate highlighted line width using bundled scaling for consistency
         let highlightedWidth: number;
-        let normalizedValue: number;
-        if (globalMaxValue === globalMinValue) {
+        if (bundledMaxValue === bundledMinValue) {
           highlightedWidth = maxStrokeWidth;
-          normalizedValue = 1;
         } else {
-          normalizedValue = Math.max(
+          const normalizedValue = Math.max(
             0,
             Math.min(
               1,
-              (link.value - globalMinValue) / (globalMaxValue - globalMinValue)
+              (link.value - bundledMinValue) /
+                (bundledMaxValue - bundledMinValue)
             )
           );
           highlightedWidth =
@@ -1232,11 +1231,11 @@ const DoMi: React.FC = () => {
             // adjust coordinates to match map positioning
             const adjustedOrigin: [number, number] = [
               originCentroid[0] + mapLeftOffset,
-              originCentroid[1] - totalHeight * 0.1,
+              originCentroid[1] + totalHeight * 0.05,
             ];
             const adjustedDest: [number, number] = [
               destCentroid[0] + mapLeftOffset,
-              destCentroid[1] - totalHeight * 0.1,
+              destCentroid[1] + totalHeight * 0.05,
             ];
 
             // create gradient for temporary line
@@ -1274,17 +1273,17 @@ const DoMi: React.FC = () => {
             ]);
 
             if (straightLinePath) {
-              // calculate what the background line width would be for this value
+              // calculate what the background line width would be using bundled scaling
               let backgroundEquivalentWidth: number;
-              if (globalMaxValue === globalMinValue) {
+              if (bundledMaxValue === bundledMinValue) {
                 backgroundEquivalentWidth = maxStrokeWidth;
               } else {
                 const normalizedValue = Math.max(
                   0,
                   Math.min(
                     1,
-                    (link.value - globalMinValue) /
-                      (globalMaxValue - globalMinValue)
+                    (link.value - bundledMinValue) /
+                      (bundledMaxValue - bundledMinValue)
                   )
                 );
                 backgroundEquivalentWidth =
@@ -2091,7 +2090,7 @@ const DoMi: React.FC = () => {
     const mapGroup = root
       .append('g')
       .attr('id', 'map-group')
-      .attr('transform', `translate(${mapLeftOffset}, ${-totalHeight * 0.1})`)
+      .attr('transform', `translate(${mapLeftOffset}, ${totalHeight * 0.05})`)
       .style('pointer-events', 'none'); // pass mouse events through the group
 
     // initialize panel SVG structure
@@ -2143,8 +2142,8 @@ const DoMi: React.FC = () => {
       .attr('pointer-events', 'none')
       .attr('fill', 'rgba(232, 27, 35, 0.3)')
       .attr('stroke', userColor)
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '3,3')
+      .attr('stroke-width', 4)
+      .attr('stroke-dasharray', '8,4')
       .attr('visibility', 'hidden');
 
     const destinationBrushRect = brushVisualsGroup
@@ -2153,8 +2152,8 @@ const DoMi: React.FC = () => {
       .attr('pointer-events', 'none')
       .attr('fill', 'rgba(0, 174, 243, 0.3)')
       .attr('stroke', userColor)
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '3,3')
+      .attr('stroke-width', 4)
+      .attr('stroke-dasharray', '8,4')
       .attr('visibility', 'hidden');
 
     d3.json('/src/assets/domesticmigration/usmap.json').then((topology) => {
@@ -2491,7 +2490,7 @@ const DoMi: React.FC = () => {
           .filter(([, centroid]) => {
             if (!centroid) return false;
             const px = centroid[0] + mapLeftOffset;
-            const py = centroid[1] - totalHeight * 0.1;
+            const py = centroid[1] + totalHeight * 0.05;
             return px >= x0 && px <= x1 && py >= y0 && py <= y1;
           })
           .map(([stateName]) => stateName.toUpperCase());
@@ -2670,8 +2669,8 @@ const DoMi: React.FC = () => {
               : 'rgba(0, 174, 243, 0.3)';
           })
           .attr('stroke', (d) => d.userColor)
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '3,3');
+          .attr('stroke-width', 4)
+          .attr('stroke-dasharray', '8,4');
 
         newBrushes
           .merge(brushes)
@@ -2829,7 +2828,56 @@ const DoMi: React.FC = () => {
         }
       });
 
+      // function to clean up brushes for users who have left
+      const cleanupUserBrushes = (disconnectedUserIds: string[]) => {
+        if (!doc || disconnectedUserIds.length === 0) return;
+
+        doc.transact(() => {
+          disconnectedUserIds.forEach((userId) => {
+            // clean up left side brush selections and coordinates
+            if (yClientBrushSelectionsLeft?.has(userId)) {
+              yClientBrushSelectionsLeft.delete(userId);
+            }
+            if (yClientBrushCoordsLeft?.has(userId)) {
+              yClientBrushCoordsLeft.delete(userId);
+            }
+
+            // clean up right side brush selections and coordinates
+            if (yClientBrushSelectionsRight?.has(userId)) {
+              yClientBrushSelectionsRight.delete(userId);
+            }
+            if (yClientBrushCoordsRight?.has(userId)) {
+              yClientBrushCoordsRight.delete(userId);
+            }
+          });
+        }, 'cleanup-disconnected-user-brushes');
+      };
+
       const awarenessObserver = () => {
+        // get current connected users
+        const currentUsers = new Set<string>();
+        if (awareness) {
+          Array.from(awareness.getStates().values()).forEach((state) => {
+            const awarenessState = state as AwarenessState;
+            if (awarenessState?.user?.id) {
+              currentUsers.add(awarenessState.user.id);
+            }
+          });
+        }
+
+        // find users who have disconnected
+        const disconnectedUsers = Array.from(connectedUsersRef.current).filter(
+          (userId) => !currentUsers.has(userId)
+        );
+
+        // clean up brushes for disconnected users
+        if (disconnectedUsers.length > 0) {
+          cleanupUserBrushes(disconnectedUsers);
+        }
+
+        // update the connected users ref
+        connectedUsersRef.current = currentUsers;
+
         updateCursors();
         updateRemoteBrushes();
       };
@@ -2951,7 +2999,6 @@ const DoMi: React.FC = () => {
 
     return () => ySharedState.unobserve(updateRefs);
   }, [ySharedState]);
-
 
   if (!syncStatus) {
     return (
@@ -3089,6 +3136,31 @@ const DoMi: React.FC = () => {
           left: '50%',
           transform: `translate(-${totalWidth / 2}px, -50%)`,
           zIndex: 1000,
+        }}
+        onMouseMove={(event) => {
+          // handle mouse tracking for cursor awareness in info panel
+          if (!awareness) return;
+
+          // calculate position relative to the full visualization area
+          const mainContainer = event.currentTarget.closest('div');
+          const containerRect = mainContainer?.getBoundingClientRect();
+
+          if (containerRect) {
+            const panelX = event.clientX - containerRect.left;
+            const panelY = event.clientY - containerRect.top;
+
+            // update local awareness state with cursor position
+            const currentState = awareness.getLocalState() as AwarenessState;
+            if (currentState) {
+              awareness.setLocalState({
+                ...currentState,
+                cursor: {
+                  x: panelX,
+                  y: panelY,
+                },
+              });
+            }
+          }
         }}
       >
         <defs>

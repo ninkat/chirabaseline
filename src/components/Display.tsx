@@ -153,7 +153,10 @@ const Display: React.FC = () => {
           zIndex: 999,
         }}
       >
-        <VideoFeeds roomId="default-room" />
+        <VideoFeeds
+          roomId="default-room"
+          layout={currentVisualization === 'domi' ? 'horizontal' : 'vertical'}
+        />
       </div>
 
       {/* collapsible sidebar menu */}
