@@ -1079,7 +1079,7 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       ])
     );
 
-    // check if filter state has changed and reset scroll position if needed
+    // check if filter state has changed and update tracking (but preserve scroll position)
     const previousFilterState = previousFilterStateRef.current;
     const filterStateChanged =
       JSON.stringify(leftFilterIATAs.sort()) !==
@@ -1087,8 +1087,7 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       JSON.stringify(rightFilterIATAs.sort()) !==
         JSON.stringify(previousFilterState.rightIATAs.sort());
 
-    if (filterStateChanged && yPanelState) {
-      yPanelState.set('flightsScrollY', 0);
+    if (filterStateChanged) {
       previousFilterStateRef.current = {
         leftIATAs: [...leftFilterIATAs],
         rightIATAs: [...rightFilterIATAs],

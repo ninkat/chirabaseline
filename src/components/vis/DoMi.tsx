@@ -430,8 +430,8 @@ const DoMi: React.FC = () => {
   const [syncStatus, setSyncStatus] = useState<boolean>(false);
   const [migrationDataLoaded, setMigrationDataLoaded] = useState(false);
 
-  const yHoveredLeftStates = doc?.getArray<string>('usTileHoveredLeftStates');
-  const yHoveredRightStates = doc?.getArray<string>('usTileHoveredRightStates');
+  const yHoveredLeftStates = doc?.getMap<string>('usTileHoveredLeftStates');
+  const yHoveredRightStates = doc?.getMap<string>('usTileHoveredRightStates');
   const yClientBrushSelectionsLeft = doc?.getMap<string[]>(
     'usTileClientBrushSelectionsLeft'
   );
@@ -558,37 +558,29 @@ const DoMi: React.FC = () => {
         event.preventDefault();
         // transfer hover state to the other side when switching modes
         const currentMode = hoverModeRef.current;
-        const currentHoverArray =
+        const currentHoverMap =
           currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
-        const targetHoverArray =
+        const targetHoverMap =
           currentMode === 'origin' ? yHoveredRightStates : yHoveredLeftStates;
         const targetSelectedArray =
           currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
 
-        if (currentHoverArray && targetHoverArray && targetSelectedArray) {
-          const currentHoveredStateNames = currentHoverArray.toArray();
+        if (currentHoverMap && targetHoverMap && targetSelectedArray) {
+          const myCurrentHoveredState = currentHoverMap.get(userId);
           const targetSelectedStateNames = targetSelectedArray.toArray();
 
-          // clear current hover
-          if (currentHoveredStateNames.length > 0) {
-            currentHoverArray.delete(0, currentHoverArray.length);
+          // clear my current hover from the current side
+          if (myCurrentHoveredState) {
+            currentHoverMap.delete(userId);
           }
 
           // transfer hover to other side only if not already selected there
-          if (currentHoveredStateNames.length > 0) {
-            const transferableStateNames = currentHoveredStateNames.filter(
-              (name) => !targetSelectedStateNames.includes(name)
-            );
-            if (transferableStateNames.length > 0) {
-              // clear target hover first
-              if (targetHoverArray.length > 0) {
-                targetHoverArray.delete(0, targetHoverArray.length);
-              }
-              // add transferable hovers
-              transferableStateNames.forEach((name) => {
-                targetHoverArray.push([name]);
-              });
-            }
+          if (
+            myCurrentHoveredState &&
+            !targetSelectedStateNames.includes(myCurrentHoveredState)
+          ) {
+            // set my hover on the target map
+            targetHoverMap.set(userId, myCurrentHoveredState);
           }
         }
 
@@ -618,6 +610,7 @@ const DoMi: React.FC = () => {
     yHoveredRightStates,
     yPinnedLeftStates,
     yPinnedRightStates,
+    userId,
   ]);
 
   // effect to sync transform state from yjs (for consistency with other components)
@@ -1419,8 +1412,12 @@ const DoMi: React.FC = () => {
       return;
 
     const calculateAndStoreMigrations = () => {
-      const currentLeftHovered = yHoveredLeftStates.toArray();
-      const currentRightHovered = yHoveredRightStates.toArray();
+      const currentLeftHovered = yHoveredLeftStates
+        ? Array.from(yHoveredLeftStates.values())
+        : [];
+      const currentRightHovered = yHoveredRightStates
+        ? Array.from(yHoveredRightStates.values())
+        : [];
 
       const allBrushLeftStates: string[] = [];
       if (yClientBrushSelectionsLeft) {
@@ -1971,8 +1968,12 @@ const DoMi: React.FC = () => {
   const renderVisuals = () => {
     if (!doc || !svgRef.current || !isInitializedRef.current) return;
 
-    const currentLeftHovered = yHoveredLeftStates?.toArray() || [];
-    const currentRightHovered = yHoveredRightStates?.toArray() || [];
+    const currentLeftHovered = yHoveredLeftStates
+      ? Array.from(yHoveredLeftStates.values())
+      : [];
+    const currentRightHovered = yHoveredRightStates
+      ? Array.from(yHoveredRightStates.values())
+      : [];
 
     const allBrushLeftStates: string[] = [];
     if (yClientBrushSelectionsLeft) {
@@ -2248,30 +2249,28 @@ const DoMi: React.FC = () => {
           if (!stateName) return;
 
           const currentMode = hoverModeRef.current;
-          const targetArray =
+          const targetMap =
             currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
           const oppositeSelectedArray =
             currentMode === 'origin' ? yPinnedRightStates : yPinnedLeftStates;
 
-          if (targetArray && oppositeSelectedArray) {
+          if (targetMap && oppositeSelectedArray) {
             const oppositeSelectedStateNames = oppositeSelectedArray.toArray();
 
             // only allow hover if state is not selected in opposite side
             if (!oppositeSelectedStateNames.includes(stateName)) {
-              // clear previous hovers and set new one
-              targetArray.delete(0, targetArray.length);
-              targetArray.push([stateName]);
+              targetMap.set(userId, stateName);
             }
           }
         })
         .on('mouseleave', function () {
           const currentMode = hoverModeRef.current;
-          const targetArray =
+          const targetMap =
             currentMode === 'origin' ? yHoveredLeftStates : yHoveredRightStates;
 
-          if (targetArray) {
-            // clear hover
-            targetArray.delete(0, targetArray.length);
+          if (targetMap) {
+            // clear this user's hover
+            targetMap.delete(userId);
           }
         })
         .on('click', function (event, d: Feature) {
