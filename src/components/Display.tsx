@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import Senate from './vis/SenateVisualization';
 import VideoFeeds from './ui/VideoFeeds';
 import TravelTask from './vis/TravelTask';
 import DoMi from './vis/DoMi';
 
 // visualization types available
-type VisualizationType = 'senate' | 'travel' | 'domi';
+type VisualizationType = 'travel' | 'domi';
 
 // style constants
 const styles = {
@@ -89,7 +88,7 @@ const styles = {
 // main display component with collapsible sidebar
 const Display: React.FC = () => {
   const [currentVisualization, setCurrentVisualization] =
-    useState<VisualizationType>('domi');
+    useState<VisualizationType>('travel');
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   // handle visualization change
@@ -106,14 +105,12 @@ const Display: React.FC = () => {
   // render current visualization
   const renderVisualization = () => {
     switch (currentVisualization) {
-      case 'senate':
-        return <Senate />;
       case 'travel':
         return <TravelTask />;
       case 'domi':
         return <DoMi />;
       default:
-        return <Senate />;
+        return <TravelTask />;
     }
   };
 
@@ -229,20 +226,6 @@ const Display: React.FC = () => {
                 data-active={currentVisualization === 'domi'}
               >
                 🔁 Domestic Migration
-              </button>
-              <button
-                style={{
-                  ...styles.menuItem,
-                  ...(currentVisualization === 'senate'
-                    ? styles.menuItemActive
-                    : {}),
-                }}
-                onClick={() => handleVisualizationChange('senate')}
-                onMouseEnter={handleMouseEnter}
-                onMouseLeave={handleMouseLeave}
-                data-active={currentVisualization === 'senate'}
-              >
-                🏛️ Senate
               </button>
             </div>
           </>

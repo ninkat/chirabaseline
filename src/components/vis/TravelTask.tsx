@@ -1079,37 +1079,84 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
       ])
     );
 
-    // check if filter state has changed and update tracking (but preserve scroll position)
-    const previousFilterState = previousFilterStateRef.current;
-    const filterStateChanged =
-      JSON.stringify(leftFilterIATAs.sort()) !==
-        JSON.stringify(previousFilterState.leftIATAs.sort()) ||
-      JSON.stringify(rightFilterIATAs.sort()) !==
-        JSON.stringify(previousFilterState.rightIATAs.sort());
+   // check if filter state has changed and update tracking (preserve scroll position when possible)
+   const previousFilterState = previousFilterStateRef.current;
+   const filterStateChanged =
+     JSON.stringify(leftFilterIATAs.sort()) !==
+       JSON.stringify(previousFilterState.leftIATAs.sort()) ||
+     JSON.stringify(rightFilterIATAs.sort()) !==
+       JSON.stringify(previousFilterState.rightIATAs.sort());
+   let currentFilteredFlights: Flight[] = [];
+   if (leftFilterIATAs.length > 0 && rightFilterIATAs.length > 0) {
+     currentFilteredFlights = allFlights.current.filter(
+       (flight) =>
+         leftFilterIATAs.includes(flight.origin) &&
+         rightFilterIATAs.includes(flight.destination)
+     );
+   } else if (leftFilterIATAs.length > 0) {
+     currentFilteredFlights = allFlights.current.filter((flight) =>
+       leftFilterIATAs.includes(flight.origin)
+     );
+   } else if (rightFilterIATAs.length > 0) {
+     currentFilteredFlights = allFlights.current.filter((flight) =>
+       rightFilterIATAs.includes(flight.destination)
+     );
+   }
 
-    if (filterStateChanged) {
-      previousFilterStateRef.current = {
-        leftIATAs: [...leftFilterIATAs],
-        rightIATAs: [...rightFilterIATAs],
-      };
-    }
+   // handle scroll position when filter state changes (preserve scroll position when possible)
+   if (filterStateChanged && yPanelState) {
+     // if either origins or destinations is empty, reset scroll to 0
+     if (leftFilterIATAs.length === 0 || rightFilterIATAs.length === 0) {
+       yPanelState.set('flightsScrollY', 0);
+     } else {
+       // calculate new max scroll position for the filtered flights
+       const currentScrollY =
+         (yPanelState.get('flightsScrollY') as number) || 0;
 
-    let currentFilteredFlights: Flight[] = [];
-    if (leftFilterIATAs.length > 0 && rightFilterIATAs.length > 0) {
-      currentFilteredFlights = allFlights.current.filter(
-        (flight) =>
-          leftFilterIATAs.includes(flight.origin) &&
-          rightFilterIATAs.includes(flight.destination)
-      );
-    } else if (leftFilterIATAs.length > 0) {
-      currentFilteredFlights = allFlights.current.filter((flight) =>
-        leftFilterIATAs.includes(flight.origin)
-      );
-    } else if (rightFilterIATAs.length > 0) {
-      currentFilteredFlights = allFlights.current.filter((flight) =>
-        rightFilterIATAs.includes(flight.destination)
-      );
-    }
+       // calculate layout dimensions for max scroll calculation
+       const paddingForScroll = 6;
+       const sectionGapForScroll = 12;
+       const titleHeightForScroll = 20;
+       const itemHeightForScroll = 35;
+       const maxItemsForScroll = 4;
+       const bottomPaddingForScroll = 10;
+       const distributionsFixedHeightForScroll = 10 + 3 * 70;
+       const selectionsYForScroll = paddingForScroll;
+       const boxHeightForScroll =
+         titleHeightForScroll +
+         25 +
+         maxItemsForScroll * itemHeightForScroll -
+         bottomPaddingForScroll;
+       const flightsYForScroll =
+         selectionsYForScroll + boxHeightForScroll + sectionGapForScroll;
+       const flightsContentYForScroll = flightsYForScroll + 10;
+       const flightsContentHeightForScroll =
+         totalHeight -
+         flightsContentYForScroll -
+         distributionsFixedHeightForScroll -
+         sectionGapForScroll -
+         paddingForScroll;
+
+       // calculate new max scroll based on current filtered flights
+       const newMaxScroll = Math.max(
+         0,
+         currentFilteredFlights.length * 80 - flightsContentHeightForScroll
+       );
+
+       // clamp current scroll position to new valid range
+       const clampedScrollY = Math.max(
+         0,
+         Math.min(newMaxScroll, currentScrollY)
+       );
+
+       yPanelState.set('flightsScrollY', clampedScrollY);
+     }
+
+     previousFilterStateRef.current = {
+       leftIATAs: [...leftFilterIATAs],
+       rightIATAs: [...rightFilterIATAs],
+     };
+   }
 
     // svg panel layout constants
     const padding = 6;
@@ -2100,10 +2147,10 @@ const TravelTask: React.FC<WorldMapProps> = ({ getCurrentTransformRef }) => {
 
     Promise.all([
       d3.json<WorldTopology>('/src/assets/traveldata/world110.topo.json'),
-      d3.json<Airport[]>('/src/assets/situation3/airports.json'),
-      d3.json<Flight[]>('/src/assets/situation3/flights.json'),
+      d3.json<Airport[]>('/src/assets/situationA/airports.json'),
+      d3.json<Flight[]>('/src/assets/situationA/flights.json'),
       d3.json<PuzzleDescription>(
-        '/src/assets/situation3/puzzle_description.json'
+        '/src/assets/situationA/puzzle_description.json'
       ),
     ])
       .then(([topology, airportsData, flightsData, puzzleData]) => {

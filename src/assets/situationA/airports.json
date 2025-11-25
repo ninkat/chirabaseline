@@ -15,7 +15,7 @@
   },
   {
     "IATA": "JFK",
-    "Airport Name": "John Fortnite Kennedy International Airport",
+    "Airport Name": "John F. Kennedy International Airport",
     "City": "New York",
     "Latitude": 40.6413,
     "Longitude": -73.7781
@@ -355,6 +355,27 @@
     "City": "Osaka",
     "Latitude": 34.432,
     "Longitude": 135.2304
+  },
+  {
+    "IATA": "BLR",
+    "Airport Name": "Kempegowda International Airport",
+    "City": "Bangalore",
+    "Latitude": 13.1986,
+    "Longitude": 77.7066
+  },
+  {
+    "IATA": "CAN",
+    "Airport Name": "Guangzhou Baiyun International Airport",
+    "City": "Guangzhou",
+    "Latitude": 23.3924,
+    "Longitude": 113.2988
+  },
+  {
+    "IATA": "CTU",
+    "Airport Name": "Chengdu Shuangliu International Airport",
+    "City": "Chengdu",
+    "Latitude": 30.5785,
+    "Longitude": 103.9467
   },
   {
     "IATA": "SYD",

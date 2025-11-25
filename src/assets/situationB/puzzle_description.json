@@ -4,7 +4,7 @@
   "friends": {
     "user_1": {
       "name": "User 1",
-      "description": "lives in rome, available july 15-19, prefers lufthansa or singapore airlines, budget max $950",
+      "description": "lives in rome, available july 15-19, prefers lufthansa or singapore airlines, budget max $700",
       "origin_airport": "FCO",
       "available_dates": [
         "2025-07-15",
@@ -17,11 +17,11 @@
         "LH",
         "SQ"
       ],
-      "max_budget": 950
+      "max_budget": 700
     },
     "user_2": {
       "name": "User 2",
-      "description": "lives in rome, available july 17-21, prefers emirates or singapore airlines, budget max $1100",
+      "description": "lives in rome, available july 17-21, prefers emirates or singapore airlines, budget max $810",
       "origin_airport": "FCO",
       "available_dates": [
         "2025-07-17",
@@ -34,7 +34,7 @@
         "EK",
         "SQ"
       ],
-      "max_budget": 1100
+      "max_budget": 810
     }
   },
   "constraints": {
@@ -51,7 +51,7 @@
     "valid_solution": {
       "same_destination": "flights must go to the same destination airport",
       "same_date": "flights must be on the same date",
-      "within_budgets": "user_1's flight <= $950, user_2's flight <= $1100",
+      "within_budgets": "user_1's flight <= $700, user_2's flight <= $810",
       "date_availability": "date must be in both users' available dates",
       "airline_preferences": "each user must use one of their preferred airlines"
     }
